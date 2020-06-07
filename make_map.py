@@ -4,8 +4,7 @@ from PIL import Image
 
 def showarr(bool_arr):
     pil = Image.fromarray((bool_arr * 255).astype(np.uint8))
-    w, h = pil.size
-    pil.save("map.png")
+    pil.show()
 
 def is_valid_link(cross, y_link, x_link, n_road):
     # 行き止まりはだめ
@@ -70,19 +69,22 @@ def make_map_info(n_road,
                   cross_density,
                   road_density):
     map_trial = 0
-    cross = np.random.uniform(size = (n_road, n_road)) <= cross_density
     while True:
         map_trial += 1
-        y_link = (np.random.uniform(size = (n_road, n_road)) <= road_density)
-        x_link = (np.random.uniform(size = (n_road, n_road)) <= road_density)
+        cross  = np.random.uniform(size = (n_road, n_road)) <= cross_density
+        y_link = np.ones((n_road, n_road))#np.random.uniform(size = (n_road, n_road)) <= road_density
+        x_link = np.ones((n_road, n_road))#np.random.uniform(size = (n_road, n_road)) <= road_density
+        y_link[-1,:] = False
+        x_link[:,-1] = False
         if is_valid_link(cross, y_link, x_link, n_road):
             break
-        print(map_trial)
+        if map_trial % 1000 == 0:
+            print(map_trial)
     return cross, y_link, x_link
 
 def main():
-    n_road = 10
-    cross_density = 0.8
+    n_road = 5
+    cross_density = 0.65
     road_density = 1.0
 
     road_point = 10
@@ -108,7 +110,10 @@ def main():
                             map_flg[(road_point + wall_point) * y + yp,
                                     (road_point + wall_point) * x + road_point + xp] = True
     map_flg = np.roll(map_flg, (wall_point//2, wall_point//2), axis = (0,1))
-    showarr(map_flg)
+    h, w = map_flg.shape
+    expand = np.zeros((h * 3, w * 3), dtype = map_flg.dtype)
+    expand[h:2*h,w:2*w] = map_flg
+    showarr(expand)
 
 if __name__ == "__main__":
     main()
