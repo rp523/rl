@@ -1,17 +1,15 @@
 #coding: utf-8
 from os import stat
 import time
+import numpy as onp
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
-import numpy as np
 from PIL import Image, ImageDraw
 from pathlib import Path
 
 class ObjectBase:
-    def __init__(self, tgt_y, tgt_x, y, x, theta, dt, v_max, a_max):
-        self.__tgt_y = tgt_y
-        self.__tgt_x = tgt_x
+    def __init__(self, y, x, theta, dt, v_max, a_max):
         self.__y = y
         self.__x = x
         self.__theta = theta
@@ -22,12 +20,6 @@ class ObjectBase:
         self.__a_max = a_max
 
     # getter
-    @property
-    def tgt_y(self):
-        return self.__tgt_y
-    @property
-    def tgt_x(self):
-        return self.__tgt_x
     @property
     def y(self):
         return self.__y
@@ -57,11 +49,11 @@ class ObjectBase:
 
     # y-position
     def calc_new_y(self, a, omega):
-        return self.__y + ObjectBase.__calc_dy(self.v, a, self.theta, omega, self.__dt, self.__v_max, self.__a_max)
+        return self.y + ObjectBase.__calc_dy(self.v, a, self.theta, omega, self.__dt, self.__v_max, self.__a_max)
     @staticmethod
     def __calc_dy(v, a, theta, omega, dt, v_max, a_max):
         dy = 0.0
-        a = np.clip(a, -a_max, a_max)
+        a = jnp.clip(a, -a_max, a_max)
         if v + a * dt > v_max:  # max speed limit
             dt_m = (v_max - v) / a
             dy = ObjectBase.__calc_dy(v, a, theta, omega, dt_m, v_max, a_max)
@@ -84,11 +76,11 @@ class ObjectBase:
 
     # x-position
     def calc_new_x(self, a, omega):
-        return self.__x + ObjectBase.__calc_dx(self.v, a, self.theta, omega, self.__dt, self.__v_max, self.__a_max)
+        return self.x + ObjectBase.__calc_dx(self.v, a, self.theta, omega, self.__dt, self.__v_max, self.__a_max)
     @staticmethod
     def __calc_dx(v, a, theta, omega, dt, v_max, a_max):
         dx = 0.0
-        a = np.clip(a, -a_max, a_max)
+        a = jnp.clip(a, -a_max, a_max)
         if v + a * dt > v_max:  # max speed limit
             dt_m = (v_max - v) / a
             dx = ObjectBase.__calc_dx(v, a, theta, omega, dt_m, v_max, a_max)
@@ -114,7 +106,7 @@ class ObjectBase:
         return ObjectBase.__calc_new_v(self.v, a, self.__dt, self.__v_max, self.__a_max)
     @staticmethod
     def __calc_new_v(v, a, dt, v_max, a_max):
-        a = np.clip(a, -a_max, a_max)
+        a = jnp.clip(a, -a_max, a_max)
         return jnp.clip(v + a * dt, 0.0, v_max)
 
     # rotation
@@ -124,9 +116,9 @@ class ObjectBase:
     def __calc_new_theta(theta, omega, dt):
         new_theta = theta + omega * dt
         if new_theta < 0.0:
-            new_theta += 2.0 * np.pi
-        elif new_theta > 2.0 * np.pi:
-            new_theta -= 2.0 * np.pi
+            new_theta += 2.0 * jnp.pi
+        elif new_theta > 2.0 * jnp.pi:
+            new_theta -= 2.0 * jnp.pi
         return new_theta
     # update motion status
     def evolve(self, a, omega, y_min, y_max, x_min, x_max):
@@ -145,10 +137,23 @@ class ObjectBase:
 
 class Pedestrian(ObjectBase):
     radius_m = 0.5
-    def __init__(self, tgt_y, tgt_x, y, x, theta, dt):
+    def __init__(self, y, x, theta, dt):
         v_max = 1.4
         a_max = v_max / 1.0
-        super().__init__(tgt_y, tgt_x, y, x, theta, dt, v_max, a_max)
+        super().__init__(y, x, theta, dt, v_max, a_max)
+
+class PedestrianAgent(Pedestrian):
+    def __init__(self, tgt_y, tgt_x, y, x, theta, dt):
+        super().__init__(y, x, theta, dt)
+        self.__tgt_y = tgt_y
+        self.__tgt_x = tgt_x
+    # getter
+    @property
+    def tgt_y(self):
+        return self.__tgt_y
+    @property
+    def tgt_x(self):
+        return self.__tgt_x
 
 class Environment:
     def __init__(self, rng, map_h, map_w, n_ped_max):
@@ -173,7 +178,7 @@ class Environment:
             tgt_y, y = jrandom.uniform(rng_y, (2,), minval = Pedestrian.radius_m, maxval = self.map_h - Pedestrian.radius_m)
             tgt_x, x = jrandom.uniform(rng_x, (2,), minval = Pedestrian.radius_m, maxval = self.map_w - Pedestrian.radius_m)
             theta = jrandom.uniform(rng_theta, (1,), minval = 0.0, maxval = 2.0 * jnp.pi)[0]
-            new_ped = Pedestrian(tgt_y, tgt_x, y, x, theta, self.__dt)
+            new_ped = PedestrianAgent(tgt_y, tgt_x, y, x, theta, self.__dt)
 
             isolated = True
             for old_ped in old_pedestrians:
@@ -220,7 +225,7 @@ PURPLE = (154,   0, 121)
 BROWN  = (102,  51,   0)
 def observe(pedestrians, map_h, map_w, pcpt_h, pcpt_w):
     cols = (WHITE, RED, YELLOW, GREEN, BLUE, SKY, PINK, ORANGE, PURPLE, BROWN)
-    occupy = Image.fromarray(np.zeros((pcpt_h, pcpt_w, 3), dtype = np.uint8))
+    occupy = Image.fromarray(onp.array(jnp.zeros((pcpt_h, pcpt_w, 3), dtype = jnp.uint8)))
     dr = ImageDraw.Draw(occupy)
     for p, ped in enumerate(pedestrians):
         y = ped.y / map_h * pcpt_h
@@ -228,16 +233,16 @@ def observe(pedestrians, map_h, map_w, pcpt_h, pcpt_w):
         ry = ped.radius_m / map_h * pcpt_h 
         rx = ped.radius_m / map_w * pcpt_w
         
-        py0 = np.clip(int((y - ry) + 0.5), 0, pcpt_h)
-        py1 = np.clip(int((y + ry) + 0.5) + 1, 0, pcpt_h)
-        px0 = np.clip(int((x - rx) + 0.5), 0, pcpt_w)
-        px1 = np.clip(int((x + rx) + 0.5) + 1, 0, pcpt_w)
+        py0 = jnp.clip(int((y - ry) + 0.5), 0, pcpt_h)
+        py1 = jnp.clip(int((y + ry) + 0.5) + 1, 0, pcpt_h)
+        px0 = jnp.clip(int((x - rx) + 0.5), 0, pcpt_w)
+        px1 = jnp.clip(int((x + rx) + 0.5) + 1, 0, pcpt_w)
         dr.rectangle((px0, py0, px1, py1), fill = cols[p])
 
         ty = ped.tgt_y / map_h * pcpt_h 
         tx = ped.tgt_x / map_w * pcpt_w
-        pty = np.clip(int(ty + 0.5), 0, pcpt_h)
-        ptx = np.clip(int(tx + 0.5), 0, pcpt_w)
+        pty = jnp.clip(int(ty + 0.5), 0, pcpt_h)
+        ptx = jnp.clip(int(tx + 0.5), 0, pcpt_w)
         lin_siz = 2
         dr.line((ptx - lin_siz, pty - lin_siz, ptx + lin_siz, pty + lin_siz), width = 1, fill = cols[p])
         dr.line((ptx - lin_siz, pty + lin_siz, ptx + lin_siz, pty - lin_siz), width = 1, fill = cols[p])
@@ -252,6 +257,8 @@ def test():
     env = Environment(_rng, map_h, map_w, 4)
     peds = env.make_init_state()
     dst_dir = Path("tmp")
+    if not dst_dir.exists():
+        dst_dir.mkdir(parents = True)
     f = None
     f = open(dst_dir.joinpath("log.csv"), "w")
     if f is not None:
@@ -260,23 +267,28 @@ def test():
             f.write("y,x,v,theta,")
         f.write("\n")
 
+    cnt = 0
     for i in range(20 * 100):
         peds = env.evolve(peds, [(1.0, 0.1)] * len(peds))
 
-        dst_path = dst_dir.joinpath("png", "{}.png".format(i))
-        print(dst_path.resolve())
-        if not dst_path.exists():
-            img = observe(peds, map_h, map_w, 256, 256)
-            if not dst_path.parent.exists():
-                dst_path.parent.mkdir(parents = True)
-            dr = ImageDraw.Draw(img)
-            dr.text((0,0), "{}".format(i), fill = WHITE)
-            img.save(dst_path)
-            if f is not None:
-                f.write("{},".format(i))
-                for ped in peds:
-                    f.write("{},{},{},{},".format(ped.y, ped.x, ped.v, ped.theta))
-                f.write("\n")
+        if i % 10 == 0:
+            cnt += 1
+            dst_path = dst_dir.joinpath("png", "{}.png".format(cnt))
+            print(dst_path.resolve())
+            if not dst_path.exists():
+                img = observe(peds, map_h, map_w, 256, 256)
+                if not dst_path.parent.exists():
+                    dst_path.parent.mkdir(parents = True)
+                dr = ImageDraw.Draw(img)
+                dr.text((0,0), "{}".format(i), fill = WHITE)
+                if not dst_path.parent.exists():
+                    dst_path.parent.mkdir(parents = True)
+                img.save(dst_path)
+                if f is not None:
+                    f.write("{},".format(i))
+                    for ped in peds:
+                        f.write("{},{},{},{},".format(ped.y, ped.x, ped.v, ped.theta))
+                    f.write("\n")
 
 
 #coding: utf-8
@@ -286,7 +298,6 @@ sys.path.append("jax")
 import time
 from pathlib import Path
 from PIL import Image
-import numpy as np
 from enum import IntEnum, auto, unique
 import jax
 import jax.numpy as jnp
