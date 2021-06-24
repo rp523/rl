@@ -68,7 +68,8 @@ class ObjectBase:
     def __calc_dy_impl(v, a, theta, omega, dt):
         def integral_y(_v, _a, _theta, _omega, _dt):
             return _a / (_omega * _omega) * jnp.sin(_theta + _omega * _dt) - (_v + _a * _dt) / _omega * jnp.cos(_theta + _omega * _dt)
-        if omega != 0.0:
+        if abs(omega) > 1E-2:
+            # use omega only when not small, dut to numerical stability.
             dy = integral_y(v, a, theta, omega, dt) - integral_y(v, a, theta, omega, 0.0)
         else:
             dy = (v + 0.5 * a * dt) * dt * jnp.sin(theta)
@@ -95,7 +96,8 @@ class ObjectBase:
     def __calc_dx_impl(v, a, theta, omega, dt):
         def integral_x(_v, _a, _theta, _omega, _dt):
             return _a / (_omega * _omega) * jnp.cos(_theta + _omega * _dt) + (_v + _a * _dt) / _omega * jnp.sin(_theta + _omega * _dt)
-        if omega != 0.0:
+        if abs(omega) > 1E-2:
+            # use omega only when not small, dut to numerical stability.
             dx = integral_x(v, a, theta, omega, dt) - integral_x(v, a, theta, omega, 0.0)
         else:
             dx = (v + 0.5 * a * dt) * dt * jnp.cos(theta)
@@ -115,20 +117,20 @@ class ObjectBase:
     @staticmethod
     def __calc_new_theta(theta, omega, dt):
         new_theta = theta + omega * dt
-        if new_theta < 0.0:
+        if new_theta < - jnp.pi:
             new_theta += 2.0 * jnp.pi
-        elif new_theta > 2.0 * jnp.pi:
+        elif new_theta > jnp.pi:
             new_theta -= 2.0 * jnp.pi
         return new_theta
     # update motion status
-    def evolve(self, a, omega, y_min, y_max, x_min, x_max):
+    def step_evolve(self, accel, omega, y_min, y_max, x_min, x_max, fin):
         new_theta = self.calc_new_theta(omega)
-        new_y = self.calc_new_y(a, omega)
-        new_x = self.calc_new_x(a, omega)
-        new_v = self.calc_new_v(a)
+        new_y = self.calc_new_y(accel, omega)
+        new_x = self.calc_new_x(accel, omega)
+        new_v = self.calc_new_v(accel)
 
         self.theta = new_theta
-        if (new_y > y_min) and (new_y < y_max) and (new_x > x_min) and (new_x < x_max):
+        if (new_y > y_min) and (new_y < y_max) and (new_x > x_min) and (new_x < x_max) and (not fin):
             self.y = new_y
             self.x = new_x
             self.v = new_v
@@ -154,14 +156,40 @@ class PedestrianAgent(Pedestrian):
     @property
     def tgt_x(self):
         return self.__tgt_x
+    
+    def reached_goal(self):
+        reached = False
+        if  (abs(self.y - self.tgt_y) < Pedestrian.radius_m) and \
+            (abs(self.x - self.tgt_x) < Pedestrian.radius_m):
+            reached = True
+        return reached
+    
+    def hit_with(self, other):
+        hit = False
+        if  (abs(self.y - other.tgt_y) < Pedestrian.radius_m) and \
+            (abs(self.x - other.tgt_x) < Pedestrian.radius_m):
+            hit = True
+        return hit
+
+class DelayRewardGen:
+    def __init__(self, decay_rate, punish_max = 1.0):
+        self.__reward = -1.0 * punish_max * (1.0 - decay_rate)
+        self.__decay_rate = decay_rate
+    def __call__(self):
+        instant_reward = self.__reward
+        self.__reward *= self.__decay_rate
+        return instant_reward
 
 class Environment:
-    def __init__(self, rng, map_h, map_w, n_ped_max):
+    def __init__(self, rng, map_h, map_w, dt, n_ped_max):
         self.__rng = rng
         self.__n_ped_max = n_ped_max
         self.__map_h = map_h
         self.__map_w = map_w
-        self.__dt = 0.05
+        self.__dt = dt
+        self.__agents = None
+        self.__rewards = None
+        self.__delay_reward_gens = None
     @property
     def n_ped_max(self):
         return self.__n_ped_max
@@ -171,6 +199,10 @@ class Environment:
     @property
     def map_w(self):
         return self.__map_w
+    def get_agents(self):
+        return self.__agents
+    def get_rewards(self):
+        return self.__rewards
 
     def __make_new_pedestrian(self, old_pedestrians):
         while 1:
@@ -191,27 +223,81 @@ class Environment:
             if isolated:
                 break
         return new_ped
-
-    def make_init_state(self):
+    
+    def __make_init_state(self):
         _rng, self.__rng = jrandom.split(self.__rng, 2)
         n_ped = jrandom.randint(_rng, (1,), 1, self.n_ped_max + 1)
 
-        objects = []
+        agents = []
+        delay_reward_gens = []
         for _ in range(int(n_ped)):
-            new_ped = self.__make_new_pedestrian(objects)
-            objects.append(new_ped)
-        assert(len(objects) == n_ped)
-        return objects
-    def evolve(self, objects, actions):
-        for obj, act in zip(objects, actions):
-            a, omega = act
-            y_min = obj.radius_m
-            y_max = self.map_h - obj.radius_m
-            x_min = obj.radius_m
-            x_max = self.map_w - obj.radius_m
-            obj.evolve(a, omega, y_min, y_max, x_min, x_max)
+            new_ped = self.__make_new_pedestrian(agents)
+            agents.append(new_ped)
+            delay_reward_gens.append(DelayRewardGen(0.5 ** (1.0 / (100.0 / self.__dt))))
+
+        return agents, delay_reward_gens
+
+    def reset(self):
+        self.__agents, self.__delay_reward_gens = self.__make_init_state()
+        self.__rewards = []
+        for _ in range(len(self.__agents)):
+            self.__rewards.append(jnp.empty(0, dtype = jnp.float32))
+
+    def __step_evolve(self, agent, action):
+        accel, omega = action
+        y_min = agent.radius_m
+        y_max = self.map_h - agent.radius_m
+        x_min = agent.radius_m
+        x_max = self.map_w - agent.radius_m
+        agent.step_evolve(accel, omega, y_min, y_max, x_min, x_max, agent.reached_goal())
+        return agent
+    
+    def __calc_reward(self, agent_idx):
+        reward = self.__delay_reward_gens[agent_idx]()
+        other_agents = self.__agents[:agent_idx] + self.__agents[agent_idx + 1:]
+        assert(len(other_agents) == len(self.__agents) - 1)
+
+        for other_agent in other_agents:
+            if self.__agents[agent_idx].hit_with(other_agent):
+                reward += (-1.0)
+        return reward
+    
+    def evolve(self, max_t):
+        for _ in range(int(max_t / self.__dt)):
+
+            # set action
+            rng_a, rng_o, self.__rng = jrandom.split(self.__rng, 3)
+            if 0: #random
+                accel = 1.0 * 1.0 * jrandom.normal(rng_a, (len(self.__agents),))
+                omega = 0.0 + jnp.pi * jrandom.normal(rng_o, (len(self.__agents),))
+            else: #best
+                accel = []
+                omega = []
+                for a in range(len(self.__agents)):
+                    accel1 = 1.0
+                    tgt_theta = jnp.arctan2((self.__agents[a].tgt_y - self.__agents[a].y), (self.__agents[a].tgt_x - self.__agents[a].x))
+                    omega1 = (tgt_theta - self.__agents[a].theta)
+                    accel.append(accel1)
+                    omega.append(omega1)
+
+            # motion
+            if self.__rewards[0].size >= 330:
+                self.__dummy = None
+            for a in range(len(self.__agents)):
+                if not self.__agents[a].reached_goal():
+                    action = (accel[a], omega[a])
+                    # update
+                    self.__agents[a] = self.__step_evolve(self.__agents[a], action)
+                    reward = self.__calc_reward(a)
+                    self.__rewards[a] = jnp.append(self.__rewards[a], reward)
             
-        return objects
+            fin_all = True
+            for a in range(len(self.__agents)):
+                fin_all &= self.__agents[a].reached_goal()
+            if fin_all:
+                break
+            
+            yield self.__agents
 
 WHITE  = (255, 255, 255)
 RED    = (255, 40,    0)
@@ -249,47 +335,87 @@ def observe(pedestrians, map_h, map_w, pcpt_h, pcpt_w):
     dr.rectangle((0, 0, pcpt_w - 1, pcpt_h - 1), outline = WHITE)
     return occupy
 
+class LogWriter:
+    def __init__(self, dst_path):
+        if not dst_path.parent.exists():
+            dst_path.parent.mkdir(parents = True)
+        self.__fp = open(dst_path, "w")
+        self.__first = True
+
+    def write(self, out_infos):
+        if self.__first:
+            LogWriter.__write(self.__fp, True, out_infos)
+            self.__first = False
+        LogWriter.__write(self.__fp, False, out_infos)
+
+    @staticmethod
+    def __write(fp, header, out_infos):
+        assert(not (fp is None))
+        for i, (key, val) in enumerate(out_infos.items()):
+            if header:
+                out = key
+            else:
+                out = val
+            fp.write("{},".format(out))
+        fp.write("\n")
+    
 def test():
     rng = jrandom.PRNGKey(0)
     _rng, rng = jrandom.split(rng, 2)
     map_h = 50.0
     map_w = 50.0
-    env = Environment(_rng, map_h, map_w, 4)
-    peds = env.make_init_state()
+    dt = 0.05
+    env = Environment(_rng, map_h, map_w, dt, 4)
+    env.reset()
+
     dst_dir = Path("tmp")
     if not dst_dir.exists():
         dst_dir.mkdir(parents = True)
-    f = None
-    f = open(dst_dir.joinpath("log.csv"), "w")
-    if f is not None:
-        f.write("frame,")
-        for ped in peds:
-            f.write("y,x,v,theta,")
-        f.write("\n")
+    log_path = dst_dir.joinpath("log.csv")
+    print(log_path.resolve())
+    log_writer = LogWriter(log_path)
 
-    cnt = 0
-    for i in range(20 * 100):
-        peds = env.evolve(peds, [(1.0, 0.1)] * len(peds))
-
-        if i % 10 == 0:
-            cnt += 1
-            dst_path = dst_dir.joinpath("png", "{}.png".format(cnt))
-            print(dst_path.resolve())
+    step = 0
+    out_cnt = 0
+    max_t = 1000.0
+    for agents in env.evolve(max_t):
+        if step % int(1.0 / dt) == 0:
+        #if 1:
+            dst_path = dst_dir.joinpath("png", "{}.png".format(out_cnt))
+            print(step * dt, dst_path.resolve())
             if not dst_path.exists():
-                img = observe(peds, map_h, map_w, 256, 256)
-                if not dst_path.parent.exists():
-                    dst_path.parent.mkdir(parents = True)
-                dr = ImageDraw.Draw(img)
-                dr.text((0,0), "{}".format(i), fill = WHITE)
-                if not dst_path.parent.exists():
-                    dst_path.parent.mkdir(parents = True)
-                img.save(dst_path)
-                if f is not None:
-                    f.write("{},".format(i))
-                    for ped in peds:
-                        f.write("{},{},{},{},".format(ped.y, ped.x, ped.v, ped.theta))
-                    f.write("\n")
+                if 1:
+                    img = observe(agents, map_h, map_w, 256, 256)
+                    if not dst_path.parent.exists():
+                        dst_path.parent.mkdir(parents = True)
+                    dr = ImageDraw.Draw(img)
+                    dr.text((0,0), "{}".format(step * dt), fill = WHITE)
+                    if not dst_path.parent.exists():
+                        dst_path.parent.mkdir(parents = True)
+                    img.save(dst_path)
 
+                out_infos = {}
+                for a, agent in enumerate(agents):
+                    agent_reward_log = env.get_rewards()[a]
+                    out_infos["step{}".format(a)] = step
+                    out_infos["t{}".format(a)] = step * dt
+                    out_infos["tgt_y{}".format(a)] = agent.tgt_y
+                    out_infos["tgt_x{}".format(a)] = agent.tgt_x
+                    out_infos["y{}".format(a)] = agent.y
+                    out_infos["x{}".format(a)] = agent.x
+                    out_infos["v{}".format(a)] = agent.v
+                    out_infos["theta{}".format(a)] = agent.theta
+                    out_infos["r{}".format(a)] = agent_reward_log[-1]
+                    out_infos["total_r{}".format(a)] = agent_reward_log.sum()
+                    out_infos["len_of_r{}".format(a)] = agent_reward_log.size
+                    out_infos["reached_goal{}".format(a)] = agent.reached_goal()
+                log_writer.write(out_infos)
+            out_cnt += 1
+        step += 1
+    print("[Total Reward]")
+    for reward_vec in env.get_rewards():
+        print(reward_vec.sum(), end = ",")
+    print()
 
 #coding: utf-8
 import subprocess
