@@ -5,9 +5,10 @@ import numpy as onp
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 from pathlib import Path
 from tqdm import tqdm
+from enum import IntEnum, auto
 
 class ObjectBase:
     def __init__(self, y, x, theta, dt, v_max, a_max):
@@ -267,7 +268,7 @@ class Environment:
     def __policy(rng, agents, agent_idx):
         # set action
         rng_a, rng_o = jrandom.split(rng)
-        if 1: #random
+        if 0: #random
             accel = 1.0 * 1.0 * jrandom.normal(rng_a)
             omega = 0.0 + jnp.pi * jrandom.normal(rng_o)
         else: #best
@@ -307,31 +308,84 @@ PINK   = (255, 153, 160)
 ORANGE = (255, 153,   0)
 PURPLE = (154,   0, 121)
 BROWN  = (102,  51,   0)
-def observe(pedestrians, map_h, map_w, pcpt_h, pcpt_w):
+def make_state_img(agents, map_h, map_w, pcpt_h, pcpt_w):
     cols = (WHITE, RED, YELLOW, GREEN, BLUE, SKY, PINK, ORANGE, PURPLE, BROWN)
     occupy = Image.fromarray(onp.array(jnp.zeros((pcpt_h, pcpt_w, 3), dtype = jnp.uint8)))
     dr = ImageDraw.Draw(occupy)
-    for p, ped in enumerate(pedestrians):
-        y = ped.y / map_h * pcpt_h
-        x = ped.x / map_w * pcpt_w
-        ry = ped.radius_m / map_h * pcpt_h 
-        rx = ped.radius_m / map_w * pcpt_w
+    for a, agent in enumerate(agents):
+        y = agent.y / map_h * pcpt_h
+        x = agent.x / map_w * pcpt_w
+        ry = agent.radius_m / map_h * pcpt_h 
+        rx = agent.radius_m / map_w * pcpt_w
         
         py0 = jnp.clip(int((y - ry) + 0.5), 0, pcpt_h)
         py1 = jnp.clip(int((y + ry) + 0.5) + 1, 0, pcpt_h)
         px0 = jnp.clip(int((x - rx) + 0.5), 0, pcpt_w)
         px1 = jnp.clip(int((x + rx) + 0.5) + 1, 0, pcpt_w)
-        dr.rectangle((px0, py0, px1, py1), fill = cols[p])
+        dr.rectangle((px0, py0, px1, py1), fill = cols[a])
 
-        ty = ped.tgt_y / map_h * pcpt_h 
-        tx = ped.tgt_x / map_w * pcpt_w
+        ty = agent.tgt_y / map_h * pcpt_h 
+        tx = agent.tgt_x / map_w * pcpt_w
         pty = jnp.clip(int(ty + 0.5), 0, pcpt_h)
         ptx = jnp.clip(int(tx + 0.5), 0, pcpt_w)
         lin_siz = 2
-        dr.line((ptx - lin_siz, pty - lin_siz, ptx + lin_siz, pty + lin_siz), width = 1, fill = cols[p])
-        dr.line((ptx - lin_siz, pty + lin_siz, ptx + lin_siz, pty - lin_siz), width = 1, fill = cols[p])
+        dr.line((ptx - lin_siz, pty - lin_siz, ptx + lin_siz, pty + lin_siz), width = 1, fill = cols[a])
+        dr.line((ptx - lin_siz, pty + lin_siz, ptx + lin_siz, pty - lin_siz), width = 1, fill = cols[a])
     dr.rectangle((0, 0, pcpt_w - 1, pcpt_h - 1), outline = WHITE)
     return occupy
+
+def rotate(y, x, theta):
+    rot_x = onp.cos(theta) * x - onp.sin(theta) * y
+    rot_y = onp.sin(theta) * x + onp.cos(theta) * y
+    return rot_y, rot_x
+class EnChannel(IntEnum):
+    occupy = 0
+    vy = auto()
+    vx = auto()
+    num = auto()
+def observe(agents, agent_idx, map_h, map_w, pcpt_h, pcpt_w):
+    state = onp.zeros((pcpt_h, pcpt_w, EnChannel.num), dtype = onp.float32)
+
+    own_obs_y = 0.5 * map_h
+    own_obs_x = 0.5 * map_w
+    
+    own = agents[agent_idx]
+    for other in (agents[:agent_idx] + agents[agent_idx + 1:]):
+        rel_y = other.y - own.y
+        rel_x = other.x - own.x
+        obs_y, obs_x = rotate(rel_y, rel_x, 0.5 * onp.pi - own.theta)
+        obs_py0 = int((obs_y - other.radius_m + own_obs_y) / map_h * pcpt_h + 0.5)
+        obs_py1 = int((obs_y + other.radius_m + own_obs_y) / map_h * pcpt_h + 0.5)
+        obs_px0 = int((obs_x - other.radius_m + own_obs_x) / map_w * pcpt_w + 0.5)
+        obs_px1 = int((obs_x + other.radius_m + own_obs_x) / map_w * pcpt_w + 0.5)
+        if  (obs_py0 <= pcpt_h - 1) and (0 <= obs_py1) and \
+            (obs_px0 <= pcpt_w - 1) and (0 <= obs_px1):
+            state[max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.occupy] = 1.0
+            state[max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.vy    ] = other.v * onp.cos(own.theta - other.theta)
+            state[max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.vx    ] = other.v * onp.sin(own.theta - other.theta)
+
+    rel_y = own.tgt_y - own.y
+    rel_x = own.tgt_x - own.x
+    obs_y, obs_x = rotate(rel_y, rel_x, 0.5 * onp.pi - own.theta)
+    obs_py0 = int((obs_y - own.radius_m + own_obs_y) / map_h * pcpt_h + 0.5)
+    obs_py1 = int((obs_y + own.radius_m + own_obs_y) / map_h * pcpt_h + 0.5)
+    obs_px0 = int((obs_x - own.radius_m + own_obs_x) / map_w * pcpt_w + 0.5)
+    obs_px1 = int((obs_x + own.radius_m + own_obs_x) / map_w * pcpt_w + 0.5)
+    if  (obs_py0 <= pcpt_h - 1) and (0 <= obs_py1) and \
+        (obs_px0 <= pcpt_w - 1) and (0 <= obs_px1):
+        state[max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.occupy] = - 1.0
+
+    obs_y = 0.0
+    obs_x = 0.0
+    obs_py0 = int((obs_y - own.radius_m + own_obs_y) / map_h * pcpt_h + 0.5)
+    obs_py1 = int((obs_y + own.radius_m + own_obs_y) / map_h * pcpt_h + 0.5)
+    obs_px0 = int((obs_x - own.radius_m + own_obs_x) / map_w * pcpt_w + 0.5)
+    obs_px1 = int((obs_x + own.radius_m + own_obs_x) / map_w * pcpt_w + 0.5)
+    if  (obs_py0 <= pcpt_h - 1) and (0 <= obs_py1) and \
+        (obs_px0 <= pcpt_w - 1) and (0 <= obs_px1):
+        state[max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.vy    ] = own.v
+    
+    return state
 
 class LogWriter:
     def __init__(self, dst_path):
@@ -356,9 +410,19 @@ class LogWriter:
                 out = val
             fp.write("{},".format(out))
         fp.write("\n")
-    
+
+def get_concat_h(im1, im2):
+    dst = Image.new('RGB', (im1.width + im2.width, im1.height))
+    dst.paste(im1, (0, 0))
+    dst.paste(im2, (im1.width, 0))
+    return dst
+def get_concat_v(im1, im2):
+    dst = Image.new('RGB', (im1.width, im1.height + im2.height))
+    dst.paste(im1, (0, 0))
+    dst.paste(im2, (0, im1.height))
+    return dst
 def test():
-    for seed in range(100):
+    for seed in range(1):
         rng = jrandom.PRNGKey(seed)
         _rng, rng = jrandom.split(rng, 2)
         map_h = 50.0
@@ -394,11 +458,17 @@ def test():
                 out_infos["reached_goal{}".format(a)] = agent.reached_goal()
             log_writer.write(out_infos)
             
-            if step % int(10.0 / dt) == 0:
+            if step % int(1.0 / dt) == 0:
                 dst_path = dst_dir.joinpath("png", "{}.png".format(out_cnt))
                 if not dst_path.exists():
                     if 1:
-                        img = observe(agents, map_h, map_w, 256, 256)
+                        pcpt_h = 128
+                        pcpt_w = 128
+                        img = ImageOps.flip(make_state_img(agents, map_h, map_w, pcpt_h, pcpt_w))
+                        img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, map_h, map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.occupy] + 1.0) / 2)).astype(jnp.uint8)))
+                        img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, map_h, map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.vy    ] + 1.5) / 3)).astype(jnp.uint8)))
+                        img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, map_h, map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.vx    ] + 1.5) / 3)).astype(jnp.uint8)))
+
                         if not dst_path.parent.exists():
                             dst_path.parent.mkdir(parents = True)
                         dr = ImageDraw.Draw(img)
