@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import jax.random as jrandom
 from PIL import Image, ImageDraw
 from pathlib import Path
+from tqdm import tqdm
 
 class ObjectBase:
     def __init__(self, y, x, theta, dt, v_max, a_max):
@@ -360,62 +361,61 @@ class LogWriter:
         fp.write("\n")
     
 def test():
-    rng = jrandom.PRNGKey(0)
-    _rng, rng = jrandom.split(rng, 2)
-    map_h = 50.0
-    map_w = 50.0
-    dt = 0.05
-    env = Environment(_rng, map_h, map_w, dt, 4)
-    env.reset()
+    for seed in range(100):
+        rng = jrandom.PRNGKey(seed)
+        _rng, rng = jrandom.split(rng, 2)
+        map_h = 50.0
+        map_w = 50.0
+        dt = 0.5
+        env = Environment(_rng, map_h, map_w, dt, 4)
+        env.reset()
 
-    dst_dir = Path("tmp")
-    if not dst_dir.exists():
-        dst_dir.mkdir(parents = True)
-    log_path = dst_dir.joinpath("log.csv")
-    print(log_path.resolve())
-    log_writer = LogWriter(log_path)
+        dst_dir = Path("tmp/seed{}".format(seed))
+        if not dst_dir.exists():
+            dst_dir.mkdir(parents = True)
+        log_path = dst_dir.joinpath("log.csv")
+        log_writer = LogWriter(log_path)
 
-    step = 0
-    out_cnt = 0
-    max_t = 1000.0
-    for agents in env.evolve(max_t):
-        if step % int(1.0 / dt) == 0:
-        #if 1:
-            dst_path = dst_dir.joinpath("png", "{}.png".format(out_cnt))
-            print(step * dt, dst_path.resolve())
-            if not dst_path.exists():
-                if 1:
-                    img = observe(agents, map_h, map_w, 256, 256)
-                    if not dst_path.parent.exists():
-                        dst_path.parent.mkdir(parents = True)
-                    dr = ImageDraw.Draw(img)
-                    dr.text((0,0), "{}".format(step * dt), fill = WHITE)
-                    if not dst_path.parent.exists():
-                        dst_path.parent.mkdir(parents = True)
-                    img.save(dst_path)
+        step = 0
+        out_cnt = 0
+        max_t = 100000.0
+        for agents in tqdm(env.evolve(max_t)):
+            out_infos = {}
+            out_infos["step"] = step
+            out_infos["t"] = step * dt
+            for a, agent in enumerate(agents):
+                agent_reward_log = env.get_rewards()[a]
+                out_infos["tgt_y{}".format(a)] = agent.tgt_y
+                out_infos["tgt_x{}".format(a)] = agent.tgt_x
+                out_infos["y{}".format(a)] = agent.y
+                out_infos["x{}".format(a)] = agent.x
+                out_infos["v{}".format(a)] = agent.v
+                out_infos["theta{}".format(a)] = agent.theta
+                out_infos["r{}".format(a)] = agent_reward_log[-1]
+                out_infos["total_r{}".format(a)] = agent_reward_log.sum()
+                out_infos["len_of_r{}".format(a)] = agent_reward_log.size
+                out_infos["reached_goal{}".format(a)] = agent.reached_goal()
+            log_writer.write(out_infos)
+            
+            if step % int(10.0 / dt) == 0:
+                dst_path = dst_dir.joinpath("png", "{}.png".format(out_cnt))
+                if not dst_path.exists():
+                    if 1:
+                        img = observe(agents, map_h, map_w, 256, 256)
+                        if not dst_path.parent.exists():
+                            dst_path.parent.mkdir(parents = True)
+                        dr = ImageDraw.Draw(img)
+                        dr.text((0,0), "{}".format(step * dt), fill = WHITE)
+                        if not dst_path.parent.exists():
+                            dst_path.parent.mkdir(parents = True)
+                        img.save(dst_path)
+                out_cnt += 1
 
-                out_infos = {}
-                for a, agent in enumerate(agents):
-                    agent_reward_log = env.get_rewards()[a]
-                    out_infos["step{}".format(a)] = step
-                    out_infos["t{}".format(a)] = step * dt
-                    out_infos["tgt_y{}".format(a)] = agent.tgt_y
-                    out_infos["tgt_x{}".format(a)] = agent.tgt_x
-                    out_infos["y{}".format(a)] = agent.y
-                    out_infos["x{}".format(a)] = agent.x
-                    out_infos["v{}".format(a)] = agent.v
-                    out_infos["theta{}".format(a)] = agent.theta
-                    out_infos["r{}".format(a)] = agent_reward_log[-1]
-                    out_infos["total_r{}".format(a)] = agent_reward_log.sum()
-                    out_infos["len_of_r{}".format(a)] = agent_reward_log.size
-                    out_infos["reached_goal{}".format(a)] = agent.reached_goal()
-                log_writer.write(out_infos)
-            out_cnt += 1
-        step += 1
-    print("[Total Reward]")
-    for reward_vec in env.get_rewards():
-        print(reward_vec.sum(), end = ",")
-    print()
+            step += 1
+        print(step * dt)
+        for reward_vec in env.get_rewards():
+            print(reward_vec.sum(), end = ",")
+        print()
 
 #coding: utf-8
 import subprocess
