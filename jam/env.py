@@ -263,32 +263,29 @@ class Environment:
                 reward += (-1.0)
         return reward
     
+    @staticmethod
+    def __policy(rng, agents, agent_idx):
+        # set action
+        rng_a, rng_o = jrandom.split(rng)
+        if 1: #random
+            accel = 1.0 * 1.0 * jrandom.normal(rng_a)
+            omega = 0.0 + jnp.pi * jrandom.normal(rng_o)
+        else: #best
+            accel = 1.0
+            tgt_theta = jnp.arctan2((agents[agent_idx].tgt_y - agents[agent_idx].y), (agents[agent_idx].tgt_x - agents[agent_idx].x))
+            omega = (tgt_theta - agents[agent_idx].theta)
+        return (accel, omega)
+
     def evolve(self, max_t):
         for _ in range(int(max_t / self.__dt)):
-
-            # set action
-            rng_a, rng_o, self.__rng = jrandom.split(self.__rng, 3)
-            if 0: #random
-                accel = 1.0 * 1.0 * jrandom.normal(rng_a, (len(self.__agents),))
-                omega = 0.0 + jnp.pi * jrandom.normal(rng_o, (len(self.__agents),))
-            else: #best
-                accel = []
-                omega = []
-                for a in range(len(self.__agents)):
-                    accel1 = 1.0
-                    tgt_theta = jnp.arctan2((self.__agents[a].tgt_y - self.__agents[a].y), (self.__agents[a].tgt_x - self.__agents[a].x))
-                    omega1 = (tgt_theta - self.__agents[a].theta)
-                    accel.append(accel1)
-                    omega.append(omega1)
-
-            # motion
-            if self.__rewards[0].size >= 330:
-                self.__dummy = None
             for a in range(len(self.__agents)):
                 if not self.__agents[a].reached_goal():
-                    action = (accel[a], omega[a])
-                    # update
+                    # action
+                    rng, self.__rng = jrandom.split(self.__rng)
+                    action = Environment.__policy(rng, self.__agents, a)
+                    # update state
                     self.__agents[a] = self.__step_evolve(self.__agents[a], action)
+                    # reward
                     reward = self.__calc_reward(a)
                     self.__rewards[a] = jnp.append(self.__rewards[a], reward)
             
