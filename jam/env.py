@@ -185,7 +185,10 @@ class DelayRewardGen:
 class Environment:
     def __init__(self, rng, map_h, map_w, dt, n_ped_max):
         self.__rng, rng = jrandom.split(rng)
-        self.__policy = Policy(rng)
+        self.__batch_size = 64
+        state_shape = (self.__batch_size, 128, 128, EnChannel.num)
+        lr = 1E-2
+        self.__policy = Policy(rng, map_h, map_w, nn_model(EnAction.num), state_shape, lr)
         self.__n_ped_max = n_ped_max
         self.__map_h = map_h
         self.__map_w = map_w
@@ -286,19 +289,57 @@ class Environment:
             
             yield self.__agents
 
+class EnAction(IntEnum):
+    accel_mean = 0
+    accel_log_sigma = auto()
+    omega_mean = auto()
+    omega_log_sigma = auto()
+    num = auto()
+
+def nn_model(output_num):
+    return serial(  Conv( 8, (7, 7), (1, 1), "VALID"), Tanh,
+                    Conv(16, (5, 5), (1, 1), "VALID"), Tanh,
+                    Conv(16, (3, 3), (1, 1), "VALID"), Tanh,
+                    Conv(32, (3, 3), (1, 1), "VALID"), Tanh,
+                    Conv(32, (3, 3), (1, 1), "VALID"), Tanh,
+                    Flatten,
+                    Dense(64), Tanh,
+                    Dense(output_num)
+    )
+
 class Policy:
-    def __init__(self, rng):
-        self.__rng = rng
+    def __init__(self, rng, map_h, map_w, nn, state_shape, lr):
+        self.__map_h = map_h
+        self.__map_w = map_w
+        self.__rng, rng_param = jax.random.split(rng)
+        init_fun, self.__apply_fun = nn
+        opt_init, self.__opt_update, self.__get_params = adam(lr)
+        self.__state_shape = state_shape
+        _, init_params = init_fun(rng_param, self.__state_shape)
+        self.__opt_state = opt_init(init_params)
+    
     def __call__(self, agents, agent_idx):
         # set action
         self.__rng, rng_a, rng_o = jrandom.split(self.__rng, 3)
         if 0: #random
             accel = 1.0 * 1.0 * jrandom.normal(rng_a)
             omega = 0.0 + jnp.pi * jrandom.normal(rng_o)
-        else: #best
+        elif 0: #best
             accel = 1.0
             tgt_theta = jnp.arctan2((agents[agent_idx].tgt_y - agents[agent_idx].y), (agents[agent_idx].tgt_x - agents[agent_idx].x))
             omega = (tgt_theta - agents[agent_idx].theta)
+        else:
+            obs_state = observe(agents, agent_idx, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
+            obs_state = obs_state.reshape(tuple([1] + list(obs_state.shape)))
+            params = self.__get_params(self.__opt_state)
+            nn_out = self.__apply_fun(params, obs_state)[0]
+
+            a_m = nn_out[EnAction.accel_mean]
+            a_ls = nn_out[EnAction.accel_log_sigma]
+            o_m = nn_out[EnAction.omega_mean]
+            o_ls = nn_out[EnAction.omega_log_sigma]
+            accel = a_m + jnp.exp(a_ls) * jrandom.normal(rng_a)
+            omega = o_m + jnp.exp(o_ls) * jrandom.normal(rng_o)
         return (accel, omega)
 
 WHITE  = (255, 255, 255)
