@@ -14,6 +14,8 @@ class ObjectBase:
     def __init__(self, y, x, theta, dt, v_max, a_max):
         self.__y = y
         self.__x = x
+        self.__init_y = y
+        self.__init_x = x
         self.__theta = theta
         self.__v = 0.0
 
@@ -28,6 +30,12 @@ class ObjectBase:
     @property
     def x(self):
         return self.__x
+    @property
+    def init_y(self):
+        return self.__init_y
+    @property
+    def init_x(self):
+        return self.__init_x
     @property
     def v(self):
         return self.__v
@@ -137,6 +145,8 @@ class ObjectBase:
             self.x = new_x
             self.v = new_v
         else:
+            self.stop()
+    def stop(self):
             self.v = 0.0
 
 class Pedestrian(ObjectBase):
@@ -173,9 +183,9 @@ class PedestrianAgent(Pedestrian):
             hit = True
         return hit
 
-class DelayRewardGen:
-    def __init__(self, decay_rate, punish_max = 1.0):
-        self.__reward = -1.0 * punish_max * (1.0 - decay_rate)
+class DelayGen:
+    def __init__(self, decay_rate, accum_max):
+        self.__reward = -1.0 * accum_max * (1.0 - decay_rate)
         self.__decay_rate = decay_rate
     def __call__(self):
         instant_reward = self.__reward
@@ -195,7 +205,8 @@ class Environment:
         self.__dt = dt
         self.__agents = None
         self.__rewards = None
-        self.__delay_reward_gens = None
+        self.__delay_gens = None
+        self.__approach_gens = None
         
     @property
     def n_ped_max(self):
@@ -206,6 +217,12 @@ class Environment:
     @property
     def map_w(self):
         return self.__map_w
+    @property
+    def dt(self):
+        return self.__dt
+    @property
+    def policy(self):
+        return self.__policy
     def get_agents(self):
         return self.__agents
     def get_rewards(self):
@@ -236,16 +253,18 @@ class Environment:
         n_ped = jrandom.randint(_rng, (1,), 1, self.n_ped_max + 1)
 
         agents = []
-        delay_reward_gens = []
+        delay_gens = []
+        approach_gens = []
         for _ in range(int(n_ped)):
             new_ped = self.__make_new_pedestrian(agents)
             agents.append(new_ped)
-            delay_reward_gens.append(DelayRewardGen(0.5 ** (1.0 / (100.0 / self.__dt))))
+            delay_gens.append(DelayGen(0.5 ** (1.0 / (100.0 / self.__dt)),  0.5))
+            approach_gens.append(DelayGen(0.5 ** (1.0 / (100.0 / self.__dt)), 0.5))
 
-        return agents, delay_reward_gens
+        return agents, delay_gens, approach_gens
 
     def reset(self):
-        self.__agents, self.__delay_reward_gens = self.__make_init_state()
+        self.__agents, self.__delay_gens, self.__approach_gens = self.__make_init_state()
         self.__rewards = []
         for _ in range(len(self.__agents)):
             self.__rewards.append(jnp.empty(0, dtype = jnp.float32))
@@ -260,13 +279,22 @@ class Environment:
         return agent
     
     def __calc_reward(self, agent_idx):
-        reward = self.__delay_reward_gens[agent_idx]()
+        reward = 0.0
+        own = self.__agents[agent_idx]
+        # delay
+        reward -= self.__delay_gens[agent_idx]()
+        # hit
         other_agents = self.__agents[:agent_idx] + self.__agents[agent_idx + 1:]
         assert(len(other_agents) == len(self.__agents) - 1)
-
         for other_agent in other_agents:
-            if self.__agents[agent_idx].hit_with(other_agent):
+            if own.hit_with(other_agent):
                 reward += (-1.0)
+        # approach
+        approach_rate = jnp.sqrt((own.y - own.init_y) ** 2 + (own.x - own.init_x) ** 2) / jnp.sqrt(self.__map_h ** 2 + self.__map_w ** 2)
+        reward -= self.__approach_gens[agent_idx]() * approach_rate
+        # reach
+        if own.reached_goal():
+            reward += 1.0
         return reward
     
     def evolve(self, max_t):
@@ -281,14 +309,21 @@ class Environment:
                     # reward
                     reward = self.__calc_reward(a)
                     self.__rewards[a] = jnp.append(self.__rewards[a], reward)
-            
+                else:
+                    self.__agents[a].stop()
+            yield self.__agents
+
             fin_all = True
             for a in range(len(self.__agents)):
                 fin_all &= self.__agents[a].reached_goal()
             if fin_all:
                 break
             
-            yield self.__agents
+    def get_total_reward(self):
+        total_reward = jnp.empty(0, jnp.float32)
+        for reward_vec in self.get_rewards():
+            total_reward = jnp.append(total_reward, reward_vec.sum())
+        return total_reward
 
 class EnAction(IntEnum):
     accel_mean = 0
@@ -483,10 +518,10 @@ def test():
     for seed in range(1):
         rng = jrandom.PRNGKey(seed)
         _rng, rng = jrandom.split(rng, 2)
-        map_h = 50.0
-        map_w = 50.0
-        pcpt_h = 128
-        pcpt_w = 128
+        map_h = 10.0
+        map_w = 10.0
+        pcpt_h = 32
+        pcpt_w = 32
         dt = 0.5
         n_ped_max = 4
         env = Environment(_rng, map_h, map_w, pcpt_h, pcpt_w, dt, n_ped_max)
