@@ -184,7 +184,8 @@ class DelayRewardGen:
 
 class Environment:
     def __init__(self, rng, map_h, map_w, dt, n_ped_max):
-        self.__rng = rng
+        self.__rng, rng = jrandom.split(rng)
+        self.__policy = Policy(rng)
         self.__n_ped_max = n_ped_max
         self.__map_h = map_h
         self.__map_w = map_w
@@ -192,6 +193,7 @@ class Environment:
         self.__agents = None
         self.__rewards = None
         self.__delay_reward_gens = None
+        
     @property
     def n_ped_max(self):
         return self.__n_ped_max
@@ -264,26 +266,12 @@ class Environment:
                 reward += (-1.0)
         return reward
     
-    @staticmethod
-    def __policy(rng, agents, agent_idx):
-        # set action
-        rng_a, rng_o = jrandom.split(rng)
-        if 0: #random
-            accel = 1.0 * 1.0 * jrandom.normal(rng_a)
-            omega = 0.0 + jnp.pi * jrandom.normal(rng_o)
-        else: #best
-            accel = 1.0
-            tgt_theta = jnp.arctan2((agents[agent_idx].tgt_y - agents[agent_idx].y), (agents[agent_idx].tgt_x - agents[agent_idx].x))
-            omega = (tgt_theta - agents[agent_idx].theta)
-        return (accel, omega)
-
     def evolve(self, max_t):
         for _ in range(int(max_t / self.__dt)):
             for a in range(len(self.__agents)):
                 if not self.__agents[a].reached_goal():
                     # action
-                    rng, self.__rng = jrandom.split(self.__rng)
-                    action = Environment.__policy(rng, self.__agents, a)
+                    action = self.__policy(self.__agents, a)
                     # update state
                     self.__agents[a] = self.__step_evolve(self.__agents[a], action)
                     # reward
@@ -297,6 +285,21 @@ class Environment:
                 break
             
             yield self.__agents
+
+class Policy:
+    def __init__(self, rng):
+        self.__rng = rng
+    def __call__(self, agents, agent_idx):
+        # set action
+        self.__rng, rng_a, rng_o = jrandom.split(self.__rng, 3)
+        if 0: #random
+            accel = 1.0 * 1.0 * jrandom.normal(rng_a)
+            omega = 0.0 + jnp.pi * jrandom.normal(rng_o)
+        else: #best
+            accel = 1.0
+            tgt_theta = jnp.arctan2((agents[agent_idx].tgt_y - agents[agent_idx].y), (agents[agent_idx].tgt_x - agents[agent_idx].x))
+            omega = (tgt_theta - agents[agent_idx].theta)
+        return (accel, omega)
 
 WHITE  = (255, 255, 255)
 RED    = (255, 40,    0)
@@ -500,17 +503,14 @@ from jax.experimental.optimizers import adam
 from dataset.fashion_mnist import FashionMnist
 
 def nn(cn):
-    return serial(  Conv( 8, (7, 7), (1, 1), "VALID"), Tanh,# 22
-                    Conv(16, (5, 5), (1, 1), "VALID"), Tanh,# 18
-                    Conv(16, (3, 3), (1, 1), "VALID"), Tanh,# 16
-                    Conv(16, (3, 3), (1, 1), "VALID"), Tanh,# 14
-                    Conv(16, (3, 3), (1, 1), "VALID"), Tanh,# 12
-                    Conv(16, (3, 3), (1, 1), "VALID"), Tanh,# 10
-                    Conv(16, (3, 3), (1, 1), "VALID"), Tanh,#  8
-                    Conv(32, (3, 3), (1, 1), "VALID"), Tanh,#  6
-                    Conv(32, (3, 3), (1, 1), "VALID"), Tanh,#  4
-                    Conv(cn, (4, 4), (1, 1), "VALID"), Tanh,#  1
+    return serial(  Conv( 8, (7, 7), (1, 1), "VALID"), Tanh,
+                    Conv(16, (5, 5), (1, 1), "VALID"), Tanh,
+                    Conv(16, (3, 3), (1, 1), "VALID"), Tanh,
+                    Conv(32, (3, 3), (1, 1), "VALID"), Tanh,
+                    Conv(32, (3, 3), (1, 1), "VALID"), Tanh,
                     Flatten,
+                    Dense(64), Tanh,
+                    Dense(2)
     )
 
 class TrainerBase:
