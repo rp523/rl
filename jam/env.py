@@ -183,12 +183,12 @@ class DelayRewardGen:
         return instant_reward
 
 class Environment:
-    def __init__(self, rng, map_h, map_w, dt, n_ped_max):
+    def __init__(self, rng, map_h, map_w, pcpt_h, pcpt_w, dt, n_ped_max):
         self.__rng, rng = jrandom.split(rng)
         self.__batch_size = 64
-        state_shape = (self.__batch_size, 128, 128, EnChannel.num)
+        self.__state_shape = (self.__batch_size, pcpt_h, pcpt_w, EnChannel.num)
         lr = 1E-2
-        self.__policy = Policy(rng, map_h, map_w, nn_model(EnAction.num), state_shape, lr)
+        self.__policy = Policy(rng, map_h, map_w, nn_model(EnAction.num), self.__state_shape, lr)
         self.__n_ped_max = n_ped_max
         self.__map_h = map_h
         self.__map_w = map_w
@@ -274,7 +274,8 @@ class Environment:
             for a in range(len(self.__agents)):
                 if not self.__agents[a].reached_goal():
                     # action
-                    action = self.__policy(self.__agents, a)
+                    obs_state = observe(self.__agents, a, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
+                    action = self.__policy(obs_state)
                     # update state
                     self.__agents[a] = self.__step_evolve(self.__agents[a], action)
                     # reward
@@ -314,11 +315,11 @@ class Policy:
         self.__rng, rng_param = jax.random.split(rng)
         init_fun, self.__apply_fun = nn
         opt_init, self.__opt_update, self.__get_params = adam(lr)
-        self.__state_shape = state_shape
-        _, init_params = init_fun(rng_param, self.__state_shape)
+        _, init_params = init_fun(rng_param, state_shape)
         self.__opt_state = opt_init(init_params)
+        self.__learn_cnt = 0
     
-    def __call__(self, agents, agent_idx):
+    def __call__(self, obs_state):
         # set action
         self.__rng, rng_a, rng_o = jrandom.split(self.__rng, 3)
         if 0: #random
@@ -329,7 +330,6 @@ class Policy:
             tgt_theta = jnp.arctan2((agents[agent_idx].tgt_y - agents[agent_idx].y), (agents[agent_idx].tgt_x - agents[agent_idx].x))
             omega = (tgt_theta - agents[agent_idx].theta)
         else:
-            obs_state = observe(agents, agent_idx, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
             obs_state = obs_state.reshape(tuple([1] + list(obs_state.shape)))
             params = self.__get_params(self.__opt_state)
             nn_out = self.__apply_fun(params, obs_state)[0]
@@ -341,6 +341,20 @@ class Policy:
             accel = a_m + jnp.exp(a_ls) * jrandom.normal(rng_a)
             omega = o_m + jnp.exp(o_ls) * jrandom.normal(rng_o)
         return (accel, omega)
+    def __loss(self, params, x, y):
+        focal_gamma = 2.0
+        y_pred = self.__apply_fun(params, x)
+        y_pred = jax.nn.softmax(y_pred)
+        loss = (- y * ((1.0 - y_pred) ** focal_gamma) * jnp.log(y_pred + 1E-10)).sum(axis = -1).mean()
+        return loss
+    def learn(self, x, y):
+        @jax.jit
+        def _update(_idx, _opt_state, _x, _y):
+            params = self.__get_params(_opt_state)
+            loss_val, grad_val = jax.value_and_grad(self.__loss)(params, _x, _y)
+            _opt_state = self.__opt_update(_idx, grad_val, _opt_state)
+            return _idx + 1, _opt_state, loss_val
+        self.__learn_cnt, self.__opt_state, loss_val = _update(self.__learn_cnt, self.__opt_state, x, y)
 
 WHITE  = (255, 255, 255)
 RED    = (255, 40,    0)
@@ -471,8 +485,11 @@ def test():
         _rng, rng = jrandom.split(rng, 2)
         map_h = 50.0
         map_w = 50.0
+        pcpt_h = 128
+        pcpt_w = 128
         dt = 0.5
-        env = Environment(_rng, map_h, map_w, dt, 4)
+        n_ped_max = 4
+        env = Environment(_rng, map_h, map_w, pcpt_h, pcpt_w, dt, n_ped_max)
         env.reset()
 
         dst_dir = Path("tmp/seed{}".format(seed))
