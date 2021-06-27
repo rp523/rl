@@ -1,3 +1,4 @@
+#coding: utf-8
 import jax.numpy as jnp
 class ObjectBase:
     def __init__(self, y, x, theta, dt, v_max, a_max):

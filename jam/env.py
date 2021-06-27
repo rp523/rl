@@ -10,18 +10,10 @@ from pathlib import Path
 from tqdm import tqdm
 from enum import IntEnum, auto
 from agent import PedestrianAgent
-
-class DelayGen:
-    def __init__(self, decay_rate, accum_max):
-        self.__reward = -1.0 * accum_max * (1.0 - decay_rate)
-        self.__decay_rate = decay_rate
-    def __call__(self):
-        instant_reward = self.__reward
-        self.__reward *= self.__decay_rate
-        return instant_reward
+from delay import DelayGen
 
 class Environment:
-    def __init__(self, rng, map_h, map_w, pcpt_h, pcpt_w, dt, n_ped_max):
+    def __init__(self, rng, map_h, map_w, pcpt_h, pcpt_w, dt, half_decay_dt, n_ped_max):
         self.__rng, rng = jrandom.split(rng)
         self.__batch_size = 64
         self.__state_shape = (self.__batch_size, pcpt_h, pcpt_w, EnChannel.num)
@@ -33,8 +25,9 @@ class Environment:
         self.__dt = dt
         self.__agents = None
         self.__rewards = None
-        self.__delay_gens = None
-        self.__approach_gens = None
+        self.__gamma = 0.5 ** (1.0 / (half_decay_dt / self.__dt))
+        self.__delay_gen = DelayGen(self.__gamma,  0.5)
+        self.__approach_gen = DelayGen(self.__gamma, 0.5)
         
     @property
     def n_ped_max(self):
@@ -92,18 +85,15 @@ class Environment:
         n_ped = jrandom.randint(_rng, (1,), 1, self.n_ped_max + 1)
 
         agents = []
-        delay_gens = []
-        approach_gens = []
         for _ in range(int(n_ped)):
             new_ped = self.__make_new_pedestrian(agents)
             agents.append(new_ped)
-            delay_gens.append(DelayGen(0.5 ** (1.0 / (100.0 / self.__dt)),  0.5))
-            approach_gens.append(DelayGen(0.5 ** (1.0 / (100.0 / self.__dt)), 0.5))
 
-        return agents, delay_gens, approach_gens
+        return agents
 
     def reset(self):
-        self.__agents, self.__delay_gens, self.__approach_gens = self.__make_init_state()
+        self.__agents = self.__make_init_state()
+
         self.__rewards = []
         for _ in range(len(self.__agents)):
             self.__rewards.append(jnp.empty(0, dtype = jnp.float32))
@@ -121,7 +111,7 @@ class Environment:
         reward = 0.0
         own = self.__agents[agent_idx]
         # delay
-        reward -= self.__delay_gens[agent_idx]()
+        reward -= self.__delay_gen()
         # hit
         other_agents = self.__agents[:agent_idx] + self.__agents[agent_idx + 1:]
         assert(len(other_agents) == len(self.__agents) - 1)
@@ -130,7 +120,7 @@ class Environment:
                 reward += (-1.0)
         # approach
         approach_rate = jnp.sqrt((own.y - own.init_y) ** 2 + (own.x - own.init_x) ** 2) / jnp.sqrt(self.__map_h ** 2 + self.__map_w ** 2)
-        reward -= self.__approach_gens[agent_idx]() * approach_rate
+        reward -= self.__approach_gen() * approach_rate
         # reach
         if own.reached_goal():
             reward += 1.0
@@ -367,8 +357,9 @@ class Trainer:
         pcpt_w = 32
         dt = 0.5
         n_ped_max = 4
+        half_decay_dt = 10.0
 
-        self.__env = Environment(_rng, map_h, map_w, pcpt_h, pcpt_w, dt, n_ped_max)
+        self.__env = Environment(_rng, map_h, map_w, pcpt_h, pcpt_w, dt, half_decay_dt, n_ped_max)
     def learn_episode(self):
         for trial in range(1):
             self.__env.reset()
