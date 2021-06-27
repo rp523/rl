@@ -9,179 +9,7 @@ from PIL import Image, ImageDraw, ImageOps
 from pathlib import Path
 from tqdm import tqdm
 from enum import IntEnum, auto
-
-class ObjectBase:
-    def __init__(self, y, x, theta, dt, v_max, a_max):
-        self.__y = y
-        self.__x = x
-        self.__init_y = y
-        self.__init_x = x
-        self.__theta = theta
-        self.__v = 0.0
-
-        self.__dt = dt
-        self.__v_max = v_max
-        self.__a_max = a_max
-
-    # getter
-    @property
-    def y(self):
-        return self.__y
-    @property
-    def x(self):
-        return self.__x
-    @property
-    def init_y(self):
-        return self.__init_y
-    @property
-    def init_x(self):
-        return self.__init_x
-    @property
-    def v(self):
-        return self.__v
-    @property
-    def theta(self):
-        return self.__theta
-    
-    # setter
-    @y.setter
-    def y(self, val):
-        self.__y = val
-    @x.setter
-    def x(self, val):
-        self.__x = val
-    @v.setter
-    def v(self, val):
-        self.__v = val
-    @theta.setter
-    def theta(self, val):
-        self.__theta = val
-
-    # y-position
-    def calc_new_y(self, a, omega):
-        return self.y + ObjectBase.__calc_dy(self.v, a, self.theta, omega, self.__dt, self.__v_max, self.__a_max)
-    @staticmethod
-    def __calc_dy(v, a, theta, omega, dt, v_max, a_max):
-        dy = 0.0
-        a = jnp.clip(a, -a_max, a_max)
-        if v + a * dt > v_max:  # max speed limit
-            dt_m = (v_max - v) / a
-            dy = ObjectBase.__calc_dy(v, a, theta, omega, dt_m, v_max, a_max)
-            dy += ObjectBase.__calc_dy(v_max, 0.0, theta + omega * dt_m, omega, dt - dt_m, v_max, a_max)
-        elif v + a * dt < 0.0:  # min speed limit
-            dt_m = v / a
-            dy = ObjectBase.__calc_dy(v, a, theta, omega, dt_m, v_max, a_max)
-        else:
-            dy = ObjectBase.__calc_dy_impl(v, a, theta, omega, dt)
-        return dy
-    @staticmethod
-    def __calc_dy_impl(v, a, theta, omega, dt):
-        def integral_y(_v, _a, _theta, _omega, _dt):
-            return _a / (_omega * _omega) * jnp.sin(_theta + _omega * _dt) - (_v + _a * _dt) / _omega * jnp.cos(_theta + _omega * _dt)
-        if abs(omega) > 1E-2:
-            # use omega only when not small, dut to numerical stability.
-            dy = integral_y(v, a, theta, omega, dt) - integral_y(v, a, theta, omega, 0.0)
-        else:
-            dy = (v + 0.5 * a * dt) * dt * jnp.sin(theta)
-        return dy
-
-    # x-position
-    def calc_new_x(self, a, omega):
-        return self.x + ObjectBase.__calc_dx(self.v, a, self.theta, omega, self.__dt, self.__v_max, self.__a_max)
-    @staticmethod
-    def __calc_dx(v, a, theta, omega, dt, v_max, a_max):
-        dx = 0.0
-        a = jnp.clip(a, -a_max, a_max)
-        if v + a * dt > v_max:  # max speed limit
-            dt_m = (v_max - v) / a
-            dx = ObjectBase.__calc_dx(v, a, theta, omega, dt_m, v_max, a_max)
-            dx += ObjectBase.__calc_dx(v_max, 0.0, theta + omega * dt_m, omega, dt - dt_m, v_max, a_max)
-        elif v + a * dt < 0.0:  # min speed limit
-            dt_m = v / a
-            dx = ObjectBase.__calc_dx(v, a, theta, omega, dt_m, v_max, a_max)
-        else:
-            dx = ObjectBase.__calc_dx_impl(v, a, theta, omega, dt)
-        return dx
-    @staticmethod
-    def __calc_dx_impl(v, a, theta, omega, dt):
-        def integral_x(_v, _a, _theta, _omega, _dt):
-            return _a / (_omega * _omega) * jnp.cos(_theta + _omega * _dt) + (_v + _a * _dt) / _omega * jnp.sin(_theta + _omega * _dt)
-        if abs(omega) > 1E-2:
-            # use omega only when not small, dut to numerical stability.
-            dx = integral_x(v, a, theta, omega, dt) - integral_x(v, a, theta, omega, 0.0)
-        else:
-            dx = (v + 0.5 * a * dt) * dt * jnp.cos(theta)
-        return dx
-
-    # speed
-    def calc_new_v(self, a):
-        return ObjectBase.__calc_new_v(self.v, a, self.__dt, self.__v_max, self.__a_max)
-    @staticmethod
-    def __calc_new_v(v, a, dt, v_max, a_max):
-        a = jnp.clip(a, -a_max, a_max)
-        return jnp.clip(v + a * dt, 0.0, v_max)
-
-    # rotation
-    def calc_new_theta(self, omega):
-        return ObjectBase.__calc_new_theta(self.theta, omega, self.__dt)
-    @staticmethod
-    def __calc_new_theta(theta, omega, dt):
-        new_theta = theta + omega * dt
-        if new_theta < - jnp.pi:
-            new_theta += 2.0 * jnp.pi
-        elif new_theta > jnp.pi:
-            new_theta -= 2.0 * jnp.pi
-        return new_theta
-    # update motion status
-    def step_evolve(self, accel, omega, y_min, y_max, x_min, x_max, fin):
-        new_theta = self.calc_new_theta(omega)
-        new_y = self.calc_new_y(accel, omega)
-        new_x = self.calc_new_x(accel, omega)
-        new_v = self.calc_new_v(accel)
-
-        self.theta = new_theta
-        if (new_y > y_min) and (new_y < y_max) and (new_x > x_min) and (new_x < x_max) and (not fin):
-            self.y = new_y
-            self.x = new_x
-            self.v = new_v
-        else:
-            self.stop()
-    def stop(self):
-            self.v = 0.0
-
-class Pedestrian(ObjectBase):
-    radius_m = 0.5
-    def __init__(self, y, x, theta, dt):
-        v_max = 1.4
-        a_max = v_max / 1.0
-        super().__init__(y, x, theta, dt, v_max, a_max)
-
-class PedestrianAgent(Pedestrian):
-    def __init__(self, tgt_y, tgt_x, y, x, theta, dt):
-        super().__init__(y, x, theta, dt)
-        self.__tgt_y = tgt_y
-        self.__tgt_x = tgt_x
-    # getter
-    @property
-    def tgt_y(self):
-        return self.__tgt_y
-    @property
-    def tgt_x(self):
-        return self.__tgt_x
-    
-    def reached_goal(self):
-        reached = False
-        if  (abs(self.y - self.tgt_y) < Pedestrian.radius_m) and \
-            (abs(self.x - self.tgt_x) < Pedestrian.radius_m):
-            reached = True
-        return reached
-    
-    def hit_with(self, other):
-        hit = False
-        if  (abs(self.y - other.tgt_y) < Pedestrian.radius_m) and \
-            (abs(self.x - other.tgt_x) < Pedestrian.radius_m):
-            hit = True
-        return hit
+from agent import PedestrianAgent
 
 class DelayGen:
     def __init__(self, decay_rate, accum_max):
@@ -231,19 +59,30 @@ class Environment:
     def __make_new_pedestrian(self, old_pedestrians):
         while 1:
             rng_y, rng_x, rng_theta, self.__rng = jrandom.split(self.__rng, 4)
-            tgt_y, y = jrandom.uniform(rng_y, (2,), minval = Pedestrian.radius_m, maxval = self.map_h - Pedestrian.radius_m)
-            tgt_x, x = jrandom.uniform(rng_x, (2,), minval = Pedestrian.radius_m, maxval = self.map_w - Pedestrian.radius_m)
+            tgt_y, y = jrandom.uniform(rng_y, (2,), minval = 0.0, maxval = self.map_h)
+            tgt_x, x = jrandom.uniform(rng_x, (2,), minval = 0.0, maxval = self.map_w)
             theta = jrandom.uniform(rng_theta, (1,), minval = 0.0, maxval = 2.0 * jnp.pi)[0]
             new_ped = PedestrianAgent(tgt_y, tgt_x, y, x, theta, self.__dt)
 
             isolated = True
-            for old_ped in old_pedestrians:
-                if  ((new_ped.tgt_y - old_ped.tgt_y) ** 2 + (new_ped.tgt_x - old_ped.tgt_x) ** 2 > Pedestrian.radius_m ** 2) and \
-                    ((new_ped.y     - old_ped.y    ) ** 2 + (new_ped.x     - old_ped.x    ) ** 2 > Pedestrian.radius_m ** 2):
-                    pass
-                else:
-                    isolated = False
-                    break
+            if  (new_ped.y >        0.0 + new_ped.radius_m) and \
+                (new_ped.y < self.map_h - new_ped.radius_m) and \
+                (new_ped.x >        0.0 + new_ped.radius_m) and \
+                (new_ped.x < self.map_w - new_ped.radius_m) and \
+                (new_ped.tgt_y >        0.0 + new_ped.radius_m) and \
+                (new_ped.tgt_y < self.map_h - new_ped.radius_m) and \
+                (new_ped.tgt_x >        0.0 + new_ped.radius_m) and \
+                (new_ped.tgt_x < self.map_w - new_ped.radius_m):
+                for old_ped in old_pedestrians:
+                    if  ((new_ped.tgt_y - old_ped.tgt_y) ** 2 + (new_ped.tgt_x - old_ped.tgt_x) ** 2 > (new_ped.radius_m + old_ped.radius_m) ** 2) and \
+                        ((new_ped.y     - old_ped.y    ) ** 2 + (new_ped.x     - old_ped.x    ) ** 2 > (new_ped.radius_m + old_ped.radius_m) ** 2):
+                        pass
+                    else:
+                        isolated = False
+                        break
+            else:
+                isolated = False
+
             if isolated:
                 break
         return new_ped
@@ -311,11 +150,12 @@ class Environment:
                     self.__rewards[a] = jnp.append(self.__rewards[a], reward)
                 else:
                     self.__agents[a].stop()
-            yield self.__agents
 
             fin_all = True
             for a in range(len(self.__agents)):
                 fin_all &= self.__agents[a].reached_goal()
+            yield fin_all, self.__agents
+            
             if fin_all:
                 break
             
@@ -357,6 +197,7 @@ class Policy:
     def __call__(self, obs_state):
         # set action
         self.__rng, rng_a, rng_o = jrandom.split(self.__rng, 3)
+        '''
         if 0: #random
             accel = 1.0 * 1.0 * jrandom.normal(rng_a)
             omega = 0.0 + jnp.pi * jrandom.normal(rng_o)
@@ -365,16 +206,17 @@ class Policy:
             tgt_theta = jnp.arctan2((agents[agent_idx].tgt_y - agents[agent_idx].y), (agents[agent_idx].tgt_x - agents[agent_idx].x))
             omega = (tgt_theta - agents[agent_idx].theta)
         else:
-            obs_state = obs_state.reshape(tuple([1] + list(obs_state.shape)))
-            params = self.__get_params(self.__opt_state)
-            nn_out = self.__apply_fun(params, obs_state)[0]
+        '''
+        obs_state = obs_state.reshape(tuple([1] + list(obs_state.shape)))
+        params = self.__get_params(self.__opt_state)
+        nn_out = self.__apply_fun(params, obs_state)[0]
 
-            a_m = nn_out[EnAction.accel_mean]
-            a_ls = nn_out[EnAction.accel_log_sigma]
-            o_m = nn_out[EnAction.omega_mean]
-            o_ls = nn_out[EnAction.omega_log_sigma]
-            accel = a_m + jnp.exp(a_ls) * jrandom.normal(rng_a)
-            omega = o_m + jnp.exp(o_ls) * jrandom.normal(rng_o)
+        a_m = nn_out[EnAction.accel_mean]
+        a_ls = nn_out[EnAction.accel_log_sigma]
+        o_m = nn_out[EnAction.omega_mean]
+        o_ls = nn_out[EnAction.omega_log_sigma]
+        accel = a_m + jnp.exp(a_ls) * jrandom.normal(rng_a)
+        omega = o_m + jnp.exp(o_ls) * jrandom.normal(rng_o)
         return (accel, omega)
     def __loss(self, params, x, y):
         focal_gamma = 2.0
@@ -514,8 +356,9 @@ def get_concat_v(im1, im2):
     dst.paste(im1, (0, 0))
     dst.paste(im2, (0, im1.height))
     return dst
-def test():
-    for seed in range(1):
+
+class Trainer:
+    def __init__(self, seed):
         rng = jrandom.PRNGKey(seed)
         _rng, rng = jrandom.split(rng, 2)
         map_h = 10.0
@@ -524,61 +367,65 @@ def test():
         pcpt_w = 32
         dt = 0.5
         n_ped_max = 4
-        env = Environment(_rng, map_h, map_w, pcpt_h, pcpt_w, dt, n_ped_max)
-        env.reset()
 
-        dst_dir = Path("tmp/seed{}".format(seed))
-        if not dst_dir.exists():
-            dst_dir.mkdir(parents = True)
-        log_path = dst_dir.joinpath("log.csv")
-        log_writer = LogWriter(log_path)
+        self.__env = Environment(_rng, map_h, map_w, pcpt_h, pcpt_w, dt, n_ped_max)
+    def learn_episode(self):
+        for trial in range(1):
+            self.__env.reset()
 
-        step = 0
-        out_cnt = 0
-        max_t = 100000.0
-        for agents in tqdm(env.evolve(max_t)):
-            out_infos = {}
-            out_infos["step"] = step
-            out_infos["t"] = step * dt
-            for a, agent in enumerate(agents):
-                agent_reward_log = env.get_rewards()[a]
-                out_infos["tgt_y{}".format(a)] = agent.tgt_y
-                out_infos["tgt_x{}".format(a)] = agent.tgt_x
-                out_infos["y{}".format(a)] = agent.y
-                out_infos["x{}".format(a)] = agent.x
-                out_infos["v{}".format(a)] = agent.v
-                out_infos["theta{}".format(a)] = agent.theta
-                out_infos["r{}".format(a)] = agent_reward_log[-1]
-                out_infos["total_r{}".format(a)] = agent_reward_log.sum()
-                out_infos["len_of_r{}".format(a)] = agent_reward_log.size
-                out_infos["reached_goal{}".format(a)] = agent.reached_goal()
-            log_writer.write(out_infos)
-            
-            if step % int(1.0 / dt) == 0:
-                dst_path = dst_dir.joinpath("png", "{}.png".format(out_cnt))
-                if not dst_path.exists():
-                    if 1:
-                        pcpt_h = 128
-                        pcpt_w = 128
-                        img = ImageOps.flip(make_state_img(agents, map_h, map_w, pcpt_h, pcpt_w))
-                        img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, map_h, map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.occupy] + 1.0) / 2)).astype(jnp.uint8)))
-                        img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, map_h, map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.vy    ] + 1.5) / 3)).astype(jnp.uint8)))
-                        img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, map_h, map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.vx    ] + 1.5) / 3)).astype(jnp.uint8)))
+            dst_dir = Path("tmp/trial{}".format(trial))
+            if not dst_dir.exists():
+                dst_dir.mkdir(parents = True)
+            log_path = dst_dir.joinpath("log.csv")
+            log_writer = LogWriter(log_path)
 
-                        if not dst_path.parent.exists():
-                            dst_path.parent.mkdir(parents = True)
-                        dr = ImageDraw.Draw(img)
-                        dr.text((0,0), "{}".format(step * dt), fill = WHITE)
-                        if not dst_path.parent.exists():
-                            dst_path.parent.mkdir(parents = True)
-                        img.save(dst_path)
-                out_cnt += 1
+            step = 0
+            out_cnt = 0
+            max_t = 100000.0
+            for (fin, agents) in tqdm(self.__env.evolve(max_t)):
+                out_infos = {}
+                out_infos["step"] = step
+                out_infos["t"] = step * self.__env.dt
+                for a, agent in enumerate(agents):
+                    agent_reward_log = self.__env.get_rewards()[a]
+                    out_infos["tgt_y{}".format(a)] = agent.tgt_y
+                    out_infos["tgt_x{}".format(a)] = agent.tgt_x
+                    out_infos["y{}".format(a)] = agent.y
+                    out_infos["x{}".format(a)] = agent.x
+                    out_infos["v{}".format(a)] = agent.v
+                    out_infos["theta{}".format(a)] = agent.theta
+                    out_infos["r{}".format(a)] = agent_reward_log[-1]
+                    out_infos["total_r{}".format(a)] = agent_reward_log.sum()
+                    out_infos["len_of_r{}".format(a)] = agent_reward_log.size
+                    out_infos["reached_goal{}".format(a)] = agent.reached_goal()
+                log_writer.write(out_infos)
+                
+                if (step % int(1.0 / self.__env.dt) == 0) or fin:
+                    dst_path = dst_dir.joinpath("png", "{}.png".format(out_cnt))
+                    if not dst_path.exists():
+                        if 1:
+                            pcpt_h = 128
+                            pcpt_w = 128
+                            img = ImageOps.flip(make_state_img(agents, self.__env.map_h, self.__env.map_w, pcpt_h, pcpt_w))
+                            img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, self.__env.map_h, self.__env.map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.occupy] + 1.0) / 2)).astype(jnp.uint8)))
+                            img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, self.__env.map_h, self.__env.map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.vy    ] + 1.5) / 3)).astype(jnp.uint8)))
+                            img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, self.__env.map_h, self.__env.map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.vx    ] + 1.5) / 3)).astype(jnp.uint8)))
 
-            step += 1
-        print(step * dt)
-        for reward_vec in env.get_rewards():
-            print(reward_vec.sum(), end = ",")
-        print()
+                            if not dst_path.parent.exists():
+                                dst_path.parent.mkdir(parents = True)
+                            dr = ImageDraw.Draw(img)
+                            dr.text((0,0), "{}".format(step * self.__env.dt), fill = WHITE)
+                            if not dst_path.parent.exists():
+                                dst_path.parent.mkdir(parents = True)
+                            img.save(dst_path)
+                    out_cnt += 1
+
+                step += 1
+
+def main():
+    seed = 0
+    trainer = Trainer(seed)
+    trainer.learn_episode()
 
 #coding: utf-8
 import subprocess
@@ -606,11 +453,7 @@ def nn(cn):
                     Dense(2)
     )
 
-class TrainerBase:
-    def __init__(self):
-        pass
-
-class Trainer(TrainerBase):
+class MnistTrainer:
     def __init__(self, rng):
         self.__rng = rng
         self.__rng_train, self.__rng_test, rng_param = jax.random.split(self.__rng, 3)
@@ -674,12 +517,6 @@ class Trainer(TrainerBase):
 
                 if reach_epoch >= 150:
                     break
-
-def main():
-    test()
-    exit()
-    m = Trainer(jax.random.PRNGKey(0))
-    m.learn()
 
 if __name__ == "__main__":
     main()
