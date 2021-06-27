@@ -1,5 +1,4 @@
 #coding: utf-8
-from os import stat
 import time
 import numpy as onp
 import jax
@@ -9,11 +8,23 @@ from PIL import Image, ImageDraw, ImageOps
 from pathlib import Path
 from tqdm import tqdm
 from enum import IntEnum, auto
+from collections import namedtuple, deque
+import subprocess
 from agent import PedestrianAgent
 from delay import DelayGen
 
+Experience = namedtuple("Experience",
+                        [
+                            "state",
+                            "action",
+                            "reward",
+                            "next_state",
+                            "finished"
+                        ]
+                        )
+
 class Environment:
-    def __init__(self, rng, map_h, map_w, pcpt_h, pcpt_w, dt, half_decay_dt, n_ped_max):
+    def __init__(self, rng, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max):
         self.__rng, rng = jrandom.split(rng)
         self.__batch_size = 64
         self.__state_shape = (self.__batch_size, pcpt_h, pcpt_w, EnChannel.num)
@@ -22,13 +33,14 @@ class Environment:
         self.__n_ped_max = n_ped_max
         self.__map_h = map_h
         self.__map_w = map_w
+        self.__max_t = max_t
         self.__dt = dt
         self.__agents = None
-        self.__rewards = None
+        self.__experiences = None
         self.__gamma = 0.5 ** (1.0 / (half_decay_dt / self.__dt))
         self.__delay_gen = DelayGen(self.__gamma,  0.5)
         self.__approach_gen = DelayGen(self.__gamma, 0.5)
-        
+
     @property
     def n_ped_max(self):
         return self.__n_ped_max
@@ -39,15 +51,19 @@ class Environment:
     def map_w(self):
         return self.__map_w
     @property
+    def max_t(self):
+        return self.__max_t
+    @property
     def dt(self):
         return self.__dt
+    @property
+    def experiences(self):
+        return self.__experiences
     @property
     def policy(self):
         return self.__policy
     def get_agents(self):
         return self.__agents
-    def get_rewards(self):
-        return self.__rewards
 
     def __make_new_pedestrian(self, old_pedestrians):
         while 1:
@@ -55,7 +71,7 @@ class Environment:
             tgt_y, y = jrandom.uniform(rng_y, (2,), minval = 0.0, maxval = self.map_h)
             tgt_x, x = jrandom.uniform(rng_x, (2,), minval = 0.0, maxval = self.map_w)
             theta = jrandom.uniform(rng_theta, (1,), minval = 0.0, maxval = 2.0 * jnp.pi)[0]
-            new_ped = PedestrianAgent(tgt_y, tgt_x, y, x, theta, self.__dt)
+            new_ped = PedestrianAgent(tgt_y, tgt_x, y, x, theta, self.dt)
 
             isolated = True
             if  (new_ped.y >        0.0 + new_ped.radius_m) and \
@@ -93,10 +109,7 @@ class Environment:
 
     def reset(self):
         self.__agents = self.__make_init_state()
-
-        self.__rewards = []
-        for _ in range(len(self.__agents)):
-            self.__rewards.append(jnp.empty(0, dtype = jnp.float32))
+        self.__experiences = deque(maxlen = int(self.max_t / self.dt))
 
     def __step_evolve(self, agent, action):
         accel, omega = action
@@ -120,26 +133,31 @@ class Environment:
                 reward += (-1.0)
         # approach
         approach_rate = jnp.sqrt((own.y - own.init_y) ** 2 + (own.x - own.init_x) ** 2) / jnp.sqrt(self.__map_h ** 2 + self.__map_w ** 2)
-        reward -= self.__approach_gen() * approach_rate
+        reward += self.__approach_gen() * approach_rate
         # reach
         if own.reached_goal():
             reward += 1.0
         return reward
     
-    def evolve(self, max_t):
-        for _ in range(int(max_t / self.__dt)):
+    def evolve(self):
+        for _ in range(int(self.max_t / self.dt)):
             for a in range(len(self.__agents)):
-                if not self.__agents[a].reached_goal():
+                fin = self.__agents[a].reached_goal()
+                state = observe(self.__agents, a, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
+                action = self.__policy(state)
+                reward = 0.0
+                if not fin:
                     # action
-                    obs_state = observe(self.__agents, a, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
-                    action = self.__policy(obs_state)
                     # update state
                     self.__agents[a] = self.__step_evolve(self.__agents[a], action)
+                    next_state = observe(self.__agents, a, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
                     # reward
                     reward = self.__calc_reward(a)
-                    self.__rewards[a] = jnp.append(self.__rewards[a], reward)
                 else:
                     self.__agents[a].stop()
+                    next_state = state.copy()
+                experience = Experience(state, action, reward, next_state, fin)
+                self.__experiences.append(experience)
 
             fin_all = True
             for a in range(len(self.__agents)):
@@ -149,12 +167,6 @@ class Environment:
             if fin_all:
                 break
             
-    def get_total_reward(self):
-        total_reward = jnp.empty(0, jnp.float32)
-        for reward_vec in self.get_rewards():
-            total_reward = jnp.append(total_reward, reward_vec.sum())
-        return total_reward
-
 class EnAction(IntEnum):
     accel_mean = 0
     accel_log_sigma = auto()
@@ -355,11 +367,12 @@ class Trainer:
         map_w = 10.0
         pcpt_h = 32
         pcpt_w = 32
+        max_t = 1000.0
         dt = 0.5
         n_ped_max = 4
         half_decay_dt = 10.0
 
-        self.__env = Environment(_rng, map_h, map_w, pcpt_h, pcpt_w, dt, half_decay_dt, n_ped_max)
+        self.__env = Environment(_rng, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
     def learn_episode(self):
         for trial in range(1):
             self.__env.reset()
@@ -367,32 +380,32 @@ class Trainer:
             dst_dir = Path("tmp/trial{}".format(trial))
             if not dst_dir.exists():
                 dst_dir.mkdir(parents = True)
+            dst_png_dir = dst_dir.joinpath("png")
             log_path = dst_dir.joinpath("log.csv")
             log_writer = LogWriter(log_path)
 
             step = 0
             out_cnt = 0
-            max_t = 100000.0
-            for (fin, agents) in tqdm(self.__env.evolve(max_t)):
+            for (fin, agents) in tqdm(self.__env.evolve()):
                 out_infos = {}
                 out_infos["step"] = step
                 out_infos["t"] = step * self.__env.dt
                 for a, agent in enumerate(agents):
-                    agent_reward_log = self.__env.get_rewards()[a]
+                    experience = self.__env.experiences[-len(agents) + a]
                     out_infos["tgt_y{}".format(a)] = agent.tgt_y
                     out_infos["tgt_x{}".format(a)] = agent.tgt_x
                     out_infos["y{}".format(a)] = agent.y
                     out_infos["x{}".format(a)] = agent.x
                     out_infos["v{}".format(a)] = agent.v
                     out_infos["theta{}".format(a)] = agent.theta
-                    out_infos["r{}".format(a)] = agent_reward_log[-1]
-                    out_infos["total_r{}".format(a)] = agent_reward_log.sum()
-                    out_infos["len_of_r{}".format(a)] = agent_reward_log.size
-                    out_infos["reached_goal{}".format(a)] = agent.reached_goal()
+                    out_infos["accel{}".format(a)] = experience.action[0]
+                    out_infos["omega{}".format(a)] = experience.action[1]
+                    out_infos["reward{}".format(a)] = experience.reward
+                    out_infos["finished{}".format(a)] = experience.finished
                 log_writer.write(out_infos)
                 
                 if (step % int(1.0 / self.__env.dt) == 0) or fin:
-                    dst_path = dst_dir.joinpath("png", "{}.png".format(out_cnt))
+                    dst_path = dst_png_dir.joinpath("{}.png".format(out_cnt))
                     if not dst_path.exists():
                         if 1:
                             pcpt_h = 128
@@ -412,9 +425,12 @@ class Trainer:
                     out_cnt += 1
 
                 step += 1
+        movie_cmd = "cd \"{}\" && ffmpeg -r 10 -i %d.png -vcodec libx264 -pix_fmt yuv420p \"{}\"".format(dst_png_dir.resolve(), dst_png_dir.parent.joinpath("out.mp4").resolve())
+        print(movie_cmd)
+        print(subprocess.getoutput(movie_cmd))
 
 def main():
-    seed = 0
+    seed = 1
     trainer = Trainer(seed)
     trainer.learn_episode()
 
@@ -428,7 +444,6 @@ from PIL import Image
 from enum import IntEnum, auto, unique
 import jax
 import jax.numpy as jnp
-import hydra
 from jax.experimental.stax import serial, parallel, Dense, Tanh, Conv, Flatten, FanOut, FanInSum, Identity, BatchNorm
 from jax.experimental.optimizers import adam
 from dataset.fashion_mnist import FashionMnist
