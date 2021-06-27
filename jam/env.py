@@ -247,29 +247,35 @@ PURPLE = (154,   0, 121)
 BROWN  = (102,  51,   0)
 def make_state_img(agents, map_h, map_w, pcpt_h, pcpt_w):
     cols = (WHITE, RED, YELLOW, GREEN, BLUE, SKY, PINK, ORANGE, PURPLE, BROWN)
-    occupy = Image.fromarray(onp.array(jnp.zeros((pcpt_h, pcpt_w, 3), dtype = jnp.uint8)))
-    dr = ImageDraw.Draw(occupy)
+    img = Image.fromarray(onp.array(jnp.zeros((pcpt_h, pcpt_w, 3), dtype = jnp.uint8)))
+    dr = ImageDraw.Draw(img)
     for a, agent in enumerate(agents):
         y = agent.y / map_h * pcpt_h
         x = agent.x / map_w * pcpt_w
         ry = agent.radius_m / map_h * pcpt_h 
         rx = agent.radius_m / map_w * pcpt_w
         
-        py0 = jnp.clip(int((y - ry) + 0.5), 0, pcpt_h)
-        py1 = jnp.clip(int((y + ry) + 0.5) + 1, 0, pcpt_h)
-        px0 = jnp.clip(int((x - rx) + 0.5), 0, pcpt_w)
-        px1 = jnp.clip(int((x + rx) + 0.5) + 1, 0, pcpt_w)
-        dr.rectangle((px0, py0, px1, py1), fill = cols[a])
+        py0 = jnp.clip(int(y + 0.5), 0, pcpt_h - 1)
+        px0 = jnp.clip(int(x + 0.5), 0, pcpt_w - 1)
+        py1 = jnp.clip(int((y + ry * onp.sin(agent.theta)) + 0.5), 0, pcpt_h - 1)
+        px1 = jnp.clip(int((x + rx * onp.cos(agent.theta)) + 0.5), 0, pcpt_w - 1)
+        dr.line((px0, py0, px1, py1), fill = cols[a], width = 1)
+        
+        py0 = jnp.clip(int((y - ry) + 0.5), 0, pcpt_h - 1)
+        py1 = jnp.clip(int((y + ry) + 0.5), 0, pcpt_h - 1)
+        px0 = jnp.clip(int((x - rx) + 0.5), 0, pcpt_w - 1)
+        px1 = jnp.clip(int((x + rx) + 0.5), 0, pcpt_w - 1)
+        dr.ellipse((px0, py0, px1, py1), outline = cols[a], width = 1)
 
-        ty = agent.tgt_y / map_h * pcpt_h 
-        tx = agent.tgt_x / map_w * pcpt_w
-        pty = jnp.clip(int(ty + 0.5), 0, pcpt_h)
-        ptx = jnp.clip(int(tx + 0.5), 0, pcpt_w)
-        lin_siz = 2
-        dr.line((ptx - lin_siz, pty - lin_siz, ptx + lin_siz, pty + lin_siz), width = 1, fill = cols[a])
-        dr.line((ptx - lin_siz, pty + lin_siz, ptx + lin_siz, pty - lin_siz), width = 1, fill = cols[a])
+        tgt_y = agent.tgt_y / map_h * pcpt_h 
+        tgt_x = agent.tgt_x / map_w * pcpt_w
+        tgt_py = jnp.clip(int(tgt_y + 0.5), 0, pcpt_h)
+        tgt_px = jnp.clip(int(tgt_x + 0.5), 0, pcpt_w)
+        lin_siz = 5
+        dr.line((tgt_px - lin_siz, tgt_py - lin_siz, tgt_px + lin_siz, tgt_py + lin_siz), width = 1, fill = cols[a])
+        dr.line((tgt_px - lin_siz, tgt_py + lin_siz, tgt_px + lin_siz, tgt_py - lin_siz), width = 1, fill = cols[a])
     dr.rectangle((0, 0, pcpt_w - 1, pcpt_h - 1), outline = WHITE)
-    return occupy
+    return img
 
 def rotate(y, x, theta):
     rot_x = onp.cos(theta) * x - onp.sin(theta) * y
