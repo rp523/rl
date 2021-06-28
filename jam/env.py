@@ -29,7 +29,7 @@ class Environment:
         self.__batch_size = 64
         self.__state_shape = (self.__batch_size, pcpt_h, pcpt_w, EnChannel.num)
         lr = 1E-2
-        self.__policy = Policy(rng, map_h, map_w, nn_model(EnAction.num * EnDist.num), self.__state_shape, lr)
+        self.__shared_nn = SharedNetwork(rng, self.__batch_size, pcpt_h, pcpt_w)
         self.__n_ped_max = n_ped_max
         self.__map_h = map_h
         self.__map_w = map_w
@@ -144,7 +144,7 @@ class Environment:
             for a in range(len(self.__agents)):
                 fin = self.__agents[a].reached_goal()
                 state = observe(self.__agents, a, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
-                action = self.__policy(state)
+                action = self.__shared_nn.apply_Pi(state)
                 reward = 0.0
                 if not fin:
                     # action
@@ -176,66 +176,91 @@ class EnDist(IntEnum):
     log_sigma = auto()
     num = auto()
 
-def nn_model(output_num):
-    return serial(  Conv( 8, (7, 7), (1, 1), "VALID"), Tanh,
-                    Conv(16, (5, 5), (1, 1), "VALID"), Tanh,
-                    Conv(16, (3, 3), (1, 1), "VALID"), Tanh,
-                    Conv(32, (3, 3), (1, 1), "VALID"), Tanh,
-                    Conv(32, (3, 3), (1, 1), "VALID"), Tanh,
-                    Flatten,
-                    Dense(64), Tanh,
-                    Dense(output_num)
-    )
+class SharedNetwork:
+    def __init__(self, rng, batch_size, pcpt_h, pcpt_w):
+        self.__rng, rng1, rng2, rng3, rng4, rng5 = jrandom.split(rng, 6)
 
-class Policy:
-    def __init__(self, rng, map_h, map_w, nn, state_shape, lr):
-        self.__map_h = map_h
-        self.__map_w = map_w
-        self.__rng, rng_param = jax.random.split(rng)
-        init_fun, self.__apply_fun = nn
-        opt_init, self.__opt_update, self.__get_params = adam(lr)
-        _, init_params = init_fun(rng_param, state_shape)
-        self.__opt_state = opt_init(init_params)
-        self.__learn_cnt = 0
-    
-    def __call__(self, obs_state):
-        # set action
-        self.__rng, rng_a, rng_o = jrandom.split(self.__rng, 3)
-        '''
-        if 0: #random
-            accel = 1.0 * 1.0 * jrandom.normal(rng_a)
-            omega = 0.0 + jnp.pi * jrandom.normal(rng_o)
-        elif 0: #best
-            accel = 1.0
-            tgt_theta = jnp.arctan2((agents[agent_idx].tgt_y - agents[agent_idx].y), (agents[agent_idx].tgt_x - agents[agent_idx].x))
-            omega = (tgt_theta - agents[agent_idx].theta)
-        else:
-        '''
-        obs_state = obs_state.reshape(tuple([1] + list(obs_state.shape)))
-        params = self.__get_params(self.__opt_state)
-        nn_out = self.__apply_fun(params, obs_state)[0]
+        feature_num = 128
+        lr = 1E-3
+        state_shape = (batch_size, pcpt_h, pcpt_w, EnChannel.num)
+        action_shape = (batch_size, EnAction.num)
+        feature_shape = (batch_size, feature_num)
 
+        self.__apply_fun = {}
+        self.__opt_update = {}
+        self.__get_params = {}
+        self.__opt_state = {}
+        for k, nn, input_shape, output_num, _rng in [
+            ("se", SharedNetwork.state_encoder, state_shape, feature_num, rng1),
+            ("ae", SharedNetwork.action_encoder, action_shape, feature_num, rng2),
+            ("pd", SharedNetwork.policy_decoder, feature_shape, EnAction.num * EnDist.num, rng3),
+            ("vd", SharedNetwork.value_decoder, feature_shape, (1,), rng4),
+            ]:
+            init_fun, self.__apply_fun[k] = nn(output_num)
+            opt_init, self.__opt_update[k], self.__get_params[k] = adam(lr)
+            _, init_params = init_fun(_rng, input_shape)
+            self.__opt_state[k] = opt_init(init_params)
+    def apply_Pi(self, state):
+        state = state.reshape(tuple([1] + list(state.shape)))
+        se_params = self.__get_params["se"](self.__opt_state["se"])
+        feature = self.__apply_fun["se"](se_params, state)
+        pd_params = self.__get_params["pd"](self.__opt_state["pd"])
+        nn_out = self.__apply_fun["pd"](pd_params, feature).flatten()
         a_m =  nn_out[EnAction.accel * EnDist.num + EnDist.mean]
         a_ls = nn_out[EnAction.accel * EnDist.num + EnDist.log_sigma]
         o_m =  nn_out[EnAction.omega * EnDist.num + EnDist.mean]
         o_ls = nn_out[EnAction.omega * EnDist.num + EnDist.log_sigma]
+
+        self.__rng, rng_a, rng_o = jrandom.split(self.__rng, 3)
         accel = a_m + jnp.exp(a_ls) * jrandom.normal(rng_a)
         omega = o_m + jnp.exp(o_ls) * jrandom.normal(rng_o)
-        return (accel, omega)
-    def __loss(self, params, x, y):
-        focal_gamma = 2.0
-        y_pred = self.__apply_fun(params, x)
-        y_pred = jax.nn.softmax(y_pred)
-        loss = (- y * ((1.0 - y_pred) ** focal_gamma) * jnp.log(y_pred + 1E-10)).sum(axis = -1).mean()
-        return loss
-    def learn(self, x, y):
-        @jax.jit
-        def _update(_idx, _opt_state, _x, _y):
-            params = self.__get_params(_opt_state)
-            loss_val, grad_val = jax.value_and_grad(self.__loss)(params, _x, _y)
-            _opt_state = self.__opt_update(_idx, grad_val, _opt_state)
-            return _idx + 1, _opt_state, loss_val
-        self.__learn_cnt, self.__opt_state, loss_val = _update(self.__learn_cnt, self.__opt_state, x, y)
+        action = (accel, omega)
+        return action
+    def apply_V(self, state):
+        se_params = self.__get_params["se"](self.__opt_state["se"])
+        feature = self.__apply_fun["se"](se_params, state)
+        vd_params = self.__get_params["vd"](self.__opt_state["vd"])
+        nn_out = self.__apply_fun["vd"](vd_params, feature)
+        return nn_out
+    def apply_Q(self, state, action):
+        se_params = self.__get_params["se"](self.__opt_state["se"])
+        se_feature = self.__apply_fun["se"](se_params, state)
+        ae_params = self.__get_params["ae"](self.__opt_state["ae"])
+        ae_feature = self.__apply_fun["ae"](ae_params, action)
+        vd_params = self.__get_params["vd"](self.__opt_state["vd"])
+        nn_out = self.__apply_fun["vd"](vd_params, se_feature + ae_feature)
+        return nn_out
+
+    @staticmethod
+    def state_encoder(output_num):
+        return serial(  Conv( 8, (7, 7), (1, 1), "VALID"), Tanh,
+                        Conv(16, (5, 5), (1, 1), "VALID"), Tanh,
+                        Conv(16, (3, 3), (1, 1), "VALID"), Tanh,
+                        Conv(32, (3, 3), (1, 1), "VALID"), Tanh,
+                        Conv(32, (3, 3), (1, 1), "VALID"), Tanh,
+                        Flatten,
+                        Dense(output_num)
+        )
+    @staticmethod
+    def action_encoder(output_num):
+        return serial(  Dense(128), Tanh,
+                        Dense(128), Tanh,
+                        Dense(128), Tanh,
+                        Dense(output_num)
+        )
+    @staticmethod
+    def policy_decoder(output_num):
+        return serial(  Dense(128), Tanh,
+                        Dense(128), Tanh,
+                        Dense(128), Tanh,
+                        Dense(output_num)
+        )
+    def value_decoder(output_num):
+        return serial(  Dense(128), Tanh,
+                        Dense(128), Tanh,
+                        Dense(128), Tanh,
+                        Dense(1)
+        )
 
 WHITE  = (255, 255, 255)
 RED    = (255, 40,    0)
