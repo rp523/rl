@@ -29,7 +29,7 @@ class Environment:
         self.__batch_size = 64
         self.__state_shape = (self.__batch_size, pcpt_h, pcpt_w, EnChannel.num)
         lr = 1E-2
-        self.__policy = Policy(rng, map_h, map_w, nn_model(EnAction.num), self.__state_shape, lr)
+        self.__policy = Policy(rng, map_h, map_w, nn_model(EnAction.num * EnDist.num), self.__state_shape, lr)
         self.__n_ped_max = n_ped_max
         self.__map_h = map_h
         self.__map_w = map_w
@@ -168,10 +168,12 @@ class Environment:
                 break
             
 class EnAction(IntEnum):
-    accel_mean = 0
-    accel_log_sigma = auto()
-    omega_mean = auto()
-    omega_log_sigma = auto()
+    accel = 0
+    omega = auto()
+    num = auto()
+class EnDist(IntEnum):
+    mean = 0
+    log_sigma = auto()
     num = auto()
 
 def nn_model(output_num):
@@ -213,10 +215,10 @@ class Policy:
         params = self.__get_params(self.__opt_state)
         nn_out = self.__apply_fun(params, obs_state)[0]
 
-        a_m = nn_out[EnAction.accel_mean]
-        a_ls = nn_out[EnAction.accel_log_sigma]
-        o_m = nn_out[EnAction.omega_mean]
-        o_ls = nn_out[EnAction.omega_log_sigma]
+        a_m =  nn_out[EnAction.accel * EnDist.num + EnDist.mean]
+        a_ls = nn_out[EnAction.accel * EnDist.num + EnDist.log_sigma]
+        o_m =  nn_out[EnAction.omega * EnDist.num + EnDist.mean]
+        o_ls = nn_out[EnAction.omega * EnDist.num + EnDist.log_sigma]
         accel = a_m + jnp.exp(a_ls) * jrandom.normal(rng_a)
         omega = o_m + jnp.exp(o_ls) * jrandom.normal(rng_o)
         return (accel, omega)
