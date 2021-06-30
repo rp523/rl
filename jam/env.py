@@ -19,6 +19,7 @@ Experience = namedtuple("Experience",
                             "action",
                             "reward",
                             "next_state",
+                            "next_action",
                             "finished"
                         ]
                         )
@@ -141,22 +142,29 @@ class Environment:
     
     def evolve(self):
         for _ in range(int(self.max_t / self.dt)):
+            rec = []
             for a in range(len(self.__agents)):
                 fin = self.__agents[a].reached_goal()
                 state = observe(self.__agents, a, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
-                action = self.__shared_nn.apply_Pi(state)
-                reward = 0.0
+
+                action = self.__agents[a].reserved_action
+                if action is None:
+                    action = self.__shared_nn.apply_Pi(state)
+
                 if not fin:
-                    # action
-                    # update state
                     self.__agents[a] = self.__step_evolve(self.__agents[a], action)
-                    next_state = observe(self.__agents, a, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
-                    # reward
                     reward = self.__calc_reward(a)
                 else:
                     self.__agents[a].stop()
-                    next_state = state.copy()
-                experience = Experience(state, action, reward, next_state, fin)
+                    reward = 0.0
+                
+                rec.append((state, action, reward, fin))
+            for a in range(len(self.__agents)):
+                next_state = observe(self.__agents, a, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
+                next_action = self.__shared_nn.apply_Pi(next_state)
+                self.__agents[a].reserved_action = next_action
+                state, action, reward, fin = rec[a]
+                experience = Experience(state, action, reward, next_state, next_action, fin)
                 self.__experiences.append(experience)
 
             fin_all = True
