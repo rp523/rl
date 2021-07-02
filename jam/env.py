@@ -149,7 +149,7 @@ class Environment:
 
                 action = self.__agents[a].reserved_action
                 if action is None:
-                    action = self.__shared_nn.apply_Pi(state)
+                    action = self.__shared_nn.decide_action(state)
 
                 if not fin:
                     self.__agents[a] = self.__step_evolve(self.__agents[a], action)
@@ -161,7 +161,7 @@ class Environment:
                 rec.append((state, action, reward, fin))
             for a in range(len(self.__agents)):
                 next_state = observe(self.__agents, a, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
-                next_action = self.__shared_nn.apply_Pi(next_state)
+                next_action = self.__shared_nn.decide_action(next_state)
                 self.__agents[a].reserved_action = next_action
                 state, action, reward, fin = rec[a]
                 experience = Experience(state, action, reward, next_state, next_action, fin)
@@ -208,7 +208,7 @@ class SharedNetwork:
             opt_init, self.__opt_update[k], self.__get_params[k] = adam(lr)
             _, init_params = init_fun(_rng, input_shape)
             self.__opt_state[k] = opt_init(init_params)
-    def apply_Pi(self, state):
+    def __apply_Pi(self, state):
         state = state.reshape(tuple([1] + list(state.shape)))
         se_params = self.__get_params["se"](self.__opt_state["se"])
         feature = self.__apply_fun["se"](se_params, state)
@@ -218,18 +218,21 @@ class SharedNetwork:
         a_ls = nn_out[EnAction.accel * EnDist.num + EnDist.log_sigma]
         o_m =  nn_out[EnAction.omega * EnDist.num + EnDist.mean]
         o_ls = nn_out[EnAction.omega * EnDist.num + EnDist.log_sigma]
-
+        return a_m, a_ls, o_m, o_ls
+    def decide_action(self, state):
+        a_m, a_ls, o_m, o_ls = self.__apply_Pi(state)
         self.__rng, rng_a, rng_o = jrandom.split(self.__rng, 3)
         accel = a_m + jnp.exp(a_ls) * jrandom.normal(rng_a)
         omega = o_m + jnp.exp(o_ls) * jrandom.normal(rng_o)
         action = (accel, omega)
         return action
-    def apply_V(self, state):
-        se_params = self.__get_params["se"](self.__opt_state["se"])
-        feature = self.__apply_fun["se"](se_params, state)
-        vd_params = self.__get_params["vd"](self.__opt_state["vd"])
-        nn_out = self.__apply_fun["vd"](vd_params, feature)
-        return nn_out
+    def log_Pi(self, state, action):
+        a, o = action
+        a_m, a_lsig, o_m, o_lsig = self.__apply_Pi(state)
+        a_sig = jnp.exp(a_lsig)
+        o_sig = jnp.exp(o_lsig)
+        log_pi = - ((a - a_m) ** 2) / (2 * (a_sig ** 2)) - ((o - o_m) ** 2) / (2 * (o_sig ** 2)) - 2.0 * 0.5 * jnp.log(2 * jnp.pi) - a_lsig - o_lsig
+        return log_pi
     def apply_Q(self, state, action):
         se_params = self.__get_params["se"](self.__opt_state["se"])
         se_feature = self.__apply_fun["se"](se_params, state)
@@ -425,9 +428,8 @@ class Trainer:
             log_path = dst_dir.joinpath("log.csv")
             log_writer = LogWriter(log_path)
 
-            step = 0
             out_cnt = 0
-            for (fin, agents) in tqdm(self.__env.evolve()):
+            for step, (fin_all, agents) in tqdm(enumerate(self.__env.evolve())):
                 out_infos = {}
                 out_infos["step"] = step
                 out_infos["t"] = step * self.__env.dt
@@ -445,7 +447,7 @@ class Trainer:
                     out_infos["finished{}".format(a)] = experience.finished
                 log_writer.write(out_infos)
                 
-                if (step % int(1.0 / self.__env.dt) == 0) or fin:
+                if (step % int(1.0 / self.__env.dt) == 0) or fin_all:
                     dst_path = dst_png_dir.joinpath("{}.png".format(out_cnt))
                     if not dst_path.exists():
                         if 1:
@@ -464,8 +466,6 @@ class Trainer:
                                 dst_path.parent.mkdir(parents = True)
                             img.save(dst_path)
                     out_cnt += 1
-
-                step += 1
         movie_cmd = "cd \"{}\" && ffmpeg -r 10 -i %d.png -vcodec libx264 -pix_fmt yuv420p \"{}\"".format(dst_png_dir.resolve(), dst_png_dir.parent.joinpath("out.mp4").resolve())
         print(movie_cmd)
         print(subprocess.getoutput(movie_cmd))
