@@ -25,9 +25,9 @@ Experience = namedtuple("Experience",
                         )
 
 class Environment:
-    def __init__(self, rng, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max):
+    def __init__(self, rng, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max):
         self.__rng, rng = jrandom.split(rng)
-        self.__batch_size = 64
+        self.__batch_size = batch_size
         self.__state_shape = (self.__batch_size, pcpt_h, pcpt_w, EnChannel.num)
         lr = 1E-2
         self.__shared_nn = SharedNetwork(rng, self.__batch_size, pcpt_h, pcpt_w)
@@ -63,6 +63,15 @@ class Environment:
     @property
     def policy(self):
         return self.__policy
+    @property
+    def shared_nn(self):
+        return self.__shared_nn
+    @property
+    def gamma(self):
+        return self.__gamma
+    @property
+    def state_shape(self):
+        return self.__state_shape
     def get_agents(self):
         return self.__agents
 
@@ -133,7 +142,7 @@ class Environment:
             if own.hit_with(other_agent):
                 reward += (-1.0)
         # approach
-        approach_rate = jnp.sqrt((own.y - own.init_y) ** 2 + (own.x - own.init_x) ** 2) / jnp.sqrt(self.__map_h ** 2 + self.__map_w ** 2)
+        approach_rate = (jnp.sqrt((own.tgt_y - own.init_y) ** 2 + (own.tgt_x - own.init_x) ** 2) - jnp.sqrt((own.y - own.tgt_y) ** 2 + (own.x - own.tgt_x) ** 2)) / jnp.sqrt(self.__map_h ** 2 + self.__map_w ** 2)
         reward += self.__approach_gen() * approach_rate
         # reach
         if own.reached_goal():
@@ -190,16 +199,16 @@ class SharedNetwork:
 
         feature_num = 128
         lr = 1E-3
-        state_shape = (batch_size, pcpt_h, pcpt_w, EnChannel.num)
+        self.__state_shape = (batch_size, pcpt_h, pcpt_w, EnChannel.num)
         action_shape = (batch_size, EnAction.num)
         feature_shape = (batch_size, feature_num)
 
         self.__apply_fun = {}
         self.__opt_update = {}
         self.__get_params = {}
-        self.__opt_state = {}
+        self.__opt_states = {}
         for k, nn, input_shape, output_num, _rng in [
-            ("se", SharedNetwork.state_encoder, state_shape, feature_num, rng1),
+            ("se", SharedNetwork.state_encoder, self.__state_shape, feature_num, rng1),
             ("ae", SharedNetwork.action_encoder, action_shape, feature_num, rng2),
             ("pd", SharedNetwork.policy_decoder, feature_shape, EnAction.num * EnDist.num, rng3),
             ("vd", SharedNetwork.value_decoder, feature_shape, (1,), rng4),
@@ -207,12 +216,19 @@ class SharedNetwork:
             init_fun, self.__apply_fun[k] = nn(output_num)
             opt_init, self.__opt_update[k], self.__get_params[k] = adam(lr)
             _, init_params = init_fun(_rng, input_shape)
-            self.__opt_state[k] = opt_init(init_params)
-    def __apply_Pi(self, state):
-        state = state.reshape(tuple([1] + list(state.shape)))
-        se_params = self.__get_params["se"](self.__opt_state["se"])
+            self.__opt_states[k] = opt_init(init_params)
+        self.__learn_cnt = 0
+    def get_params(self, opt_states):
+        params = {}
+        for k, opt_state in opt_states.items():
+            params[k] = self.__get_params[k](opt_state)
+        return params
+    def __apply_Pi(self, params, state):
+        if state.ndim != len(self.__state_shape):
+            state = state.reshape(tuple([1] + list(state.shape)))
+        se_params = params["se"]
         feature = self.__apply_fun["se"](se_params, state)
-        pd_params = self.__get_params["pd"](self.__opt_state["pd"])
+        pd_params = params["pd"]
         nn_out = self.__apply_fun["pd"](pd_params, feature).flatten()
         a_m =  nn_out[EnAction.accel * EnDist.num + EnDist.mean]
         a_ls = nn_out[EnAction.accel * EnDist.num + EnDist.log_sigma]
@@ -220,27 +236,60 @@ class SharedNetwork:
         o_ls = nn_out[EnAction.omega * EnDist.num + EnDist.log_sigma]
         return a_m, a_ls, o_m, o_ls
     def decide_action(self, state):
-        a_m, a_ls, o_m, o_ls = self.__apply_Pi(state)
+        a_m, a_ls, o_m, o_ls = self.__apply_Pi(self.get_params(self.__opt_states), state)
         self.__rng, rng_a, rng_o = jrandom.split(self.__rng, 3)
         accel = a_m + jnp.exp(a_ls) * jrandom.normal(rng_a)
         omega = o_m + jnp.exp(o_ls) * jrandom.normal(rng_o)
         action = (accel, omega)
         return action
-    def log_Pi(self, state, action):
-        a, o = action
-        a_m, a_lsig, o_m, o_lsig = self.__apply_Pi(state)
+    def log_Pi(self, params, state, action):
+        a = action[:, EnAction.accel]
+        o = action[:, EnAction.omega]
+
+        a_m, a_lsig, o_m, o_lsig = self.__apply_Pi(params, state)
         a_sig = jnp.exp(a_lsig)
         o_sig = jnp.exp(o_lsig)
         log_pi = - ((a - a_m) ** 2) / (2 * (a_sig ** 2)) - ((o - o_m) ** 2) / (2 * (o_sig ** 2)) - 2.0 * 0.5 * jnp.log(2 * jnp.pi) - a_lsig - o_lsig
         return log_pi
-    def apply_Q(self, state, action):
-        se_params = self.__get_params["se"](self.__opt_state["se"])
+    def apply_Q(self, params, state, action):
+        se_params = params["se"]
         se_feature = self.__apply_fun["se"](se_params, state)
-        ae_params = self.__get_params["ae"](self.__opt_state["ae"])
+        ae_params = params["ae"]
         ae_feature = self.__apply_fun["ae"](ae_params, action)
-        vd_params = self.__get_params["vd"](self.__opt_state["vd"])
+        vd_params = params["vd"]
         nn_out = self.__apply_fun["vd"](vd_params, se_feature + ae_feature)
-        return nn_out
+        return nn_out.flatten()
+    def update(self, gamma, s, a, r, n_s, n_a):
+        _apply_Q = self.apply_Q
+        _log_Pi = self.log_Pi
+        def J_q(params, s, a, r, n_s, n_a):
+            return 0.5 * (_apply_Q(params, s, a) - (r - gamma * (_apply_Q(params, n_s, n_a) - _log_Pi(params, n_s, n_a)))) ** 2
+        def J_pi(params, s, a, n_s, n_a):
+            return _log_Pi(params, n_s, n_a) - _apply_Q(params, s, a)
+        def loss(param_se, param_ae, param_pd, param_vd, s, a, r, n_s, n_a):
+            params = {  "se" : param_se,
+                        "ae" : param_ae,
+                        "pd" : param_pd,
+                        "vd" : param_vd,
+                        }
+            return jnp.mean(J_q(params, s, a, r, n_s, n_a) + J_pi(params, s, a, n_s, n_a))
+        #@jax.jit
+        def _update(_idx, _opt_states, s, a, r, n_s, n_a):
+            params = self.get_params(_opt_states)
+            param_se = params["se"]
+            param_ae = params["ae"]
+            param_pd = params["pd"]
+            param_vd = params["vd"]
+
+            for i, k in enumerate(self.__opt_update.keys()):
+                loss_val, grad_val = jax.value_and_grad(loss, argnums = i)(param_se, param_ae, param_pd, param_vd, s, a, r, n_s, n_a)
+                if jnp.isinf(loss_val).any() or jnp.isnan(loss_val).any():
+                    pass
+                else:
+                    _opt_states[k] = self.__opt_update[k](_idx, grad_val, _opt_states[k])
+            return _idx + 1, _opt_states, loss_val
+        self.__learn_cnt, self.__opt_states, loss_val = _update(self.__learn_cnt, self.__opt_states, s, a, r, n_s, n_a)
+        return self.__learn_cnt, loss_val
 
     @staticmethod
     def state_encoder(output_num):
@@ -270,7 +319,8 @@ class SharedNetwork:
         return serial(  Dense(128), Tanh,
                         Dense(128), Tanh,
                         Dense(128), Tanh,
-                        Dense(1)
+                        Dense(1),
+                        Flatten
         )
 
 WHITE  = (255, 255, 255)
@@ -406,51 +456,58 @@ def get_concat_v(im1, im2):
 class Trainer:
     def __init__(self, seed):
         rng = jrandom.PRNGKey(seed)
-        _rng, rng = jrandom.split(rng, 2)
+        self.__rng, rng = jrandom.split(rng)
+        batch_size = 64
         map_h = 10.0
         map_w = 10.0
         pcpt_h = 32
         pcpt_w = 32
-        max_t = 1000.0
+        max_t = 100.0
         dt = 0.5
         n_ped_max = 4
         half_decay_dt = 10.0
 
-        self.__env = Environment(_rng, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
+        self.__env = Environment(rng, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
     def learn_episode(self):
-        for trial in range(1):
+        log_writer = None
+        for trial in range(1000):
             self.__env.reset()
 
-            dst_dir = Path("tmp/trial{}".format(trial))
+            dst_base_dir = Path("tmp")
+            dst_dir = dst_base_dir.joinpath("trial{}".format(trial))
             if not dst_dir.exists():
                 dst_dir.mkdir(parents = True)
             dst_png_dir = dst_dir.joinpath("png")
-            log_path = dst_dir.joinpath("log.csv")
+            log_path = dst_base_dir.joinpath("log{}.csv".format(trial))
+            if log_writer is not None:
+                del log_writer
             log_writer = LogWriter(log_path)
 
             out_cnt = 0
+            total_reward = [0.0] * len(self.__env.get_agents())
             for step, (fin_all, agents) in tqdm(enumerate(self.__env.evolve())):
                 out_infos = {}
                 out_infos["step"] = step
                 out_infos["t"] = step * self.__env.dt
-                for a, agent in enumerate(agents):
-                    experience = self.__env.experiences[-len(agents) + a]
-                    out_infos["tgt_y{}".format(a)] = agent.tgt_y
-                    out_infos["tgt_x{}".format(a)] = agent.tgt_x
-                    out_infos["y{}".format(a)] = agent.y
-                    out_infos["x{}".format(a)] = agent.x
-                    out_infos["v{}".format(a)] = agent.v
-                    out_infos["theta{}".format(a)] = agent.theta
-                    out_infos["accel{}".format(a)] = experience.action[0]
-                    out_infos["omega{}".format(a)] = experience.action[1]
-                    out_infos["reward{}".format(a)] = experience.reward
-                    out_infos["finished{}".format(a)] = experience.finished
+                for agent_idx, agent in enumerate(agents):
+                    experience = self.__env.experiences[-len(agents) + agent_idx]
+                    out_infos["tgt_y{}".format(agent_idx)] = agent.tgt_y
+                    out_infos["tgt_x{}".format(agent_idx)] = agent.tgt_x
+                    out_infos["y{}".format(agent_idx)] = agent.y
+                    out_infos["x{}".format(agent_idx)] = agent.x
+                    out_infos["v{}".format(agent_idx)] = agent.v
+                    out_infos["theta{}".format(agent_idx)] = agent.theta
+                    out_infos["accel{}".format(agent_idx)] = experience.action[0]
+                    out_infos["omega{}".format(agent_idx)] = experience.action[1]
+                    out_infos["reward{}".format(agent_idx)] = experience.reward
+                    out_infos["finished{}".format(agent_idx)] = experience.finished
+                    total_reward[agent_idx] += experience.reward
                 log_writer.write(out_infos)
                 
                 if (step % int(1.0 / self.__env.dt) == 0) or fin_all:
                     dst_path = dst_png_dir.joinpath("{}.png".format(out_cnt))
                     if not dst_path.exists():
-                        if 1:
+                        if 0:
                             pcpt_h = 128
                             pcpt_w = 128
                             img = ImageOps.flip(make_state_img(agents, self.__env.map_h, self.__env.map_w, pcpt_h, pcpt_w))
@@ -466,9 +523,35 @@ class Trainer:
                                 dst_path.parent.mkdir(parents = True)
                             img.save(dst_path)
                     out_cnt += 1
-        movie_cmd = "cd \"{}\" && ffmpeg -r 10 -i %d.png -vcodec libx264 -pix_fmt yuv420p \"{}\"".format(dst_png_dir.resolve(), dst_png_dir.parent.joinpath("out.mp4").resolve())
-        print(movie_cmd)
-        print(subprocess.getoutput(movie_cmd))
+            
+            # after episode
+            state_shape = self.__env.state_shape
+            s = onp.zeros(state_shape, dtype = onp.float32)
+            a = onp.zeros((state_shape[0], EnAction.num), dtype = onp.float32)
+            r = onp.zeros((state_shape[0], ), dtype = onp.float32)
+            n_s = onp.zeros(state_shape, dtype = onp.float32)
+            n_a = onp.zeros((state_shape[0], EnAction.num), dtype = onp.float32)
+            gamma = self.__env.gamma
+            val = 0
+            self.__rng, rng = jrandom.split(self.__rng)
+            for i in jrandom.permutation(rng, jnp.arange(len(self.__env.experiences))):
+                e = self.__env.experiences[i]
+                if not e.finished:
+                    s[val] = e.state
+                    a[val] = e.action
+                    r[val] = e.reward
+                    n_s[val] = e.next_state
+                    n_a[val] = e.next_action
+                    val += 1
+                    if val >= state_shape[0]:
+                        learn_cnt, loss_val = self.__env.shared_nn.update(gamma, s, a, r, n_s, n_a)
+                        with open(dst_dir.parent.joinpath("loss.csv"), "a") as f:
+                            f.write("{},{},{}\n".format(trial, learn_cnt, loss_val))
+                        print("episode={},learn_cnt={},loss={}".format(trial, learn_cnt, loss_val))
+                        val = 0
+            print("total_reward_mean={}".format(onp.array(total_reward).mean()))
+            #movie_cmd = "cd \"{}\" && ffmpeg -r 10 -i %d.png -vcodec libx264 -pix_fmt yuv420p \"{}\"".format(dst_png_dir.resolve(), dst_png_dir.parent.joinpath("out.mp4").resolve())
+            #subprocess.run(movie_cmd)
 
 def main():
     seed = 1
