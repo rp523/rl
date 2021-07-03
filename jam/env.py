@@ -10,6 +10,7 @@ from tqdm import tqdm
 from enum import IntEnum, auto
 from collections import namedtuple, deque
 import subprocess
+import pickle
 from agent import PedestrianAgent
 from delay import DelayGen
 
@@ -25,12 +26,12 @@ Experience = namedtuple("Experience",
                         )
 
 class Environment:
-    def __init__(self, rng, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max):
+    def __init__(self, rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max):
         self.__rng, rng = jrandom.split(rng)
         self.__batch_size = batch_size
         self.__state_shape = (self.__batch_size, pcpt_h, pcpt_w, EnChannel.num)
         lr = 1E-2
-        self.__shared_nn = SharedNetwork(rng, self.__batch_size, pcpt_h, pcpt_w)
+        self.__shared_nn = SharedNetwork(rng, init_weight_path, self.__batch_size, pcpt_h, pcpt_w)
         self.__n_ped_max = n_ped_max
         self.__map_h = map_h
         self.__map_w = map_w
@@ -195,7 +196,7 @@ class EnDist(IntEnum):
     num = auto()
 
 class SharedNetwork:
-    def __init__(self, rng, batch_size, pcpt_h, pcpt_w):
+    def __init__(self, rng, init_weight_path, batch_size, pcpt_h, pcpt_w):
         self.__rng, rng1, rng2, rng3, rng4, rng5 = jrandom.split(rng, 6)
 
         feature_num = 128
@@ -205,6 +206,7 @@ class SharedNetwork:
         feature_shape = (batch_size, feature_num)
 
         self.__apply_fun = {}
+        self.__opt_init = {}
         self.__opt_update = {}
         self.__get_params = {}
         self.__opt_states = {}
@@ -215,9 +217,13 @@ class SharedNetwork:
             ("vd", SharedNetwork.value_decoder, feature_shape, (1,), rng4),
             ]:
             init_fun, self.__apply_fun[k] = nn(output_num)
-            opt_init, self.__opt_update[k], self.__get_params[k] = adam(lr)
+            self.__opt_init[k], self.__opt_update[k], self.__get_params[k] = adam(lr)
             _, init_params = init_fun(_rng, input_shape)
-            self.__opt_states[k] = opt_init(init_params)
+            self.__opt_states[k] = self.__opt_init[k](init_params)
+        
+        if init_weight_path is not None:
+            if Path(init_weight_path).exists():
+                self.__load(init_weight_path)
         self.__learn_cnt = 0
     def get_params(self, opt_states):
         params = {}
@@ -260,6 +266,16 @@ class SharedNetwork:
         vd_params = params["vd"]
         nn_out = self.__apply_fun["vd"](vd_params, se_feature + ae_feature)
         return nn_out.flatten()
+    def save(self, weight_path):
+        params = self.get_params(self.__opt_states)
+        with open(weight_path, 'wb') as f:
+            pickle.dump(params, f)
+    def __load(self, weight_path):
+        with open(weight_path, 'rb') as f:
+            params = pickle.load(f)
+        for k in self.__opt_states.keys():
+            self.__opt_states[k] = self.__opt_init[k](params[k])
+
     def update(self, gamma, s, a, r, n_s, n_a):
         apply_Q = self.__apply_Q
         log_Pi = self.__log_Pi
@@ -459,7 +475,7 @@ class Trainer:
     def __init__(self, seed):
         rng = jrandom.PRNGKey(seed)
         self.__rng, rng = jrandom.split(rng)
-        batch_size = 64
+        batch_size = 8
         map_h = 10.0
         map_w = 10.0
         pcpt_h = 32
@@ -468,8 +484,9 @@ class Trainer:
         dt = 0.5
         n_ped_max = 4
         half_decay_dt = 10.0
+        init_weight_path = None
 
-        self.__env = Environment(rng, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
+        self.__env = Environment(rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
     def learn_episode(self):
         log_writer = None
         for trial in range(1000):
@@ -538,7 +555,7 @@ class Trainer:
             gamma = self.__env.gamma
             val = 0
             self.__rng, rng = jrandom.split(self.__rng)
-            for i in jrandom.permutation(rng, jnp.arange(len(self.__env.experiences))):
+            for i in jrandom.choice(rng, jnp.arange(len(self.__env.experiences)), (len(self.__env.experiences) * 10,)):
                 e = self.__env.experiences[i]
                 if not e.finished:
                     s[val] = e.state
@@ -554,6 +571,8 @@ class Trainer:
                         print("episode={},learn_cnt={},loss={}".format(trial, learn_cnt, loss_val))
                         val = 0
             print("total_reward_mean={}".format(total_reward_mean))
+            weight_path = dst_dir.joinpath("param.bin")
+            self.__env.shared_nn.save(weight_path)
             #movie_cmd = "cd \"{}\" && ffmpeg -r 10 -i %d.png -vcodec libx264 -pix_fmt yuv420p \"{}\"".format(dst_png_dir.resolve(), dst_png_dir.parent.joinpath("out.mp4").resolve())
             #subprocess.run(movie_cmd)
 
@@ -561,7 +580,7 @@ def main():
     seed = 1
     trainer = Trainer(seed)
     trainer.learn_episode()
-
+    
 #coding: utf-8
 import subprocess
 import sys

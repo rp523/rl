@@ -1,6 +1,7 @@
 #coding: utf-8
 import jax.numpy as jnp
 class ObjectBase:
+    __eps = 1E-2
     def __init__(self, y, x, theta, dt, v_max, a_max):
         self.__y = y
         self.__x = x
@@ -60,7 +61,8 @@ class ObjectBase:
             dy += ObjectBase.__calc_dy(v_max, 0.0, theta + omega * dt_m, omega, dt - dt_m, v_max, a_max)
         elif v + a * dt < 0.0:  # min speed limit
             dt_m = v / a
-            dy = ObjectBase.__calc_dy(v, a, theta, omega, dt_m, v_max, a_max)
+            if dt_m > 0.0:
+                dy = ObjectBase.__calc_dy(v, a, theta, omega, dt_m, v_max, a_max)
         else:
             dy = ObjectBase.__calc_dy_impl(v, a, theta, omega, dt)
         return dy
@@ -68,7 +70,7 @@ class ObjectBase:
     def __calc_dy_impl(v, a, theta, omega, dt):
         def integral_y(_v, _a, _theta, _omega, _dt):
             return _a / (_omega * _omega) * jnp.sin(_theta + _omega * _dt) - (_v + _a * _dt) / _omega * jnp.cos(_theta + _omega * _dt)
-        if abs(omega) > 1E-2:
+        if abs(omega) > ObjectBase.__eps:
             # use omega only when not small, dut to numerical stability.
             dy = integral_y(v, a, theta, omega, dt) - integral_y(v, a, theta, omega, 0.0)
         else:
@@ -88,7 +90,8 @@ class ObjectBase:
             dx += ObjectBase.__calc_dx(v_max, 0.0, theta + omega * dt_m, omega, dt - dt_m, v_max, a_max)
         elif v + a * dt < 0.0:  # min speed limit
             dt_m = v / a
-            dx = ObjectBase.__calc_dx(v, a, theta, omega, dt_m, v_max, a_max)
+            if dt_m > 0.0:
+                dx = ObjectBase.__calc_dx(v, a, theta, omega, dt_m, v_max, a_max)
         else:
             dx = ObjectBase.__calc_dx_impl(v, a, theta, omega, dt)
         return dx
@@ -96,7 +99,7 @@ class ObjectBase:
     def __calc_dx_impl(v, a, theta, omega, dt):
         def integral_x(_v, _a, _theta, _omega, _dt):
             return _a / (_omega * _omega) * jnp.cos(_theta + _omega * _dt) + (_v + _a * _dt) / _omega * jnp.sin(_theta + _omega * _dt)
-        if abs(omega) > 1E-2:
+        if abs(omega) > ObjectBase.__eps:
             # use omega only when not small, dut to numerical stability.
             dx = integral_x(v, a, theta, omega, dt) - integral_x(v, a, theta, omega, 0.0)
         else:
