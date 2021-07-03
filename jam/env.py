@@ -242,16 +242,10 @@ class SharedNetwork:
         omega = o_m + jnp.exp(o_ls) * jrandom.normal(rng_o)
         action = (accel, omega)
         return action
-    def log_Pi(self, params, state, action):
-        a = action[:, EnAction.accel]
-        o = action[:, EnAction.omega]
-
+    def __action_entropy(self, params, state):
         a_m, a_lsig, o_m, o_lsig = self.__apply_Pi(params, state)
-        a_sig = jnp.exp(a_lsig)
-        o_sig = jnp.exp(o_lsig)
-        log_pi = - ((a - a_m) ** 2) / (2 * (a_sig ** 2)) - ((o - o_m) ** 2) / (2 * (o_sig ** 2)) - 2.0 * 0.5 * jnp.log(2 * jnp.pi) - a_lsig - o_lsig
-        return log_pi
-    def apply_Q(self, params, state, action):
+        return 2 * 0.5 * (1.0 + jnp.log(2.0 * jnp.pi)) + a_lsig + o_lsig
+    def __apply_Q(self, params, state, action):
         se_params = params["se"]
         se_feature = self.__apply_fun["se"](se_params, state)
         ae_params = params["ae"]
@@ -260,19 +254,20 @@ class SharedNetwork:
         nn_out = self.__apply_fun["vd"](vd_params, se_feature + ae_feature)
         return nn_out.flatten()
     def update(self, gamma, s, a, r, n_s, n_a):
-        _apply_Q = self.apply_Q
-        _log_Pi = self.log_Pi
+        apply_Q = self.__apply_Q
+        action_entropy = self.__action_entropy
         def J_q(params, s, a, r, n_s, n_a):
-            return 0.5 * (_apply_Q(params, s, a) - (r - gamma * (_apply_Q(params, n_s, n_a) - _log_Pi(params, n_s, n_a)))) ** 2
-        def J_pi(params, s, a, n_s, n_a):
-            return _log_Pi(params, n_s, n_a) - _apply_Q(params, s, a)
+            next_V = apply_Q(params, n_s, n_a) + action_entropy(params, n_s)
+            return 0.5 * (apply_Q(params, s, a) - (r + gamma * next_V)) ** 2
+        def J_pi(params, s, a):
+            return - action_entropy(params, s) - apply_Q(params, s, a)
         def loss(param_se, param_ae, param_pd, param_vd, s, a, r, n_s, n_a):
             params = {  "se" : param_se,
                         "ae" : param_ae,
                         "pd" : param_pd,
                         "vd" : param_vd,
                         }
-            return jnp.mean(J_q(params, s, a, r, n_s, n_a) + J_pi(params, s, a, n_s, n_a))
+            return jnp.mean(J_q(params, s, a, r, n_s, n_a) + J_pi(params, s, a))
         #@jax.jit
         def _update(_idx, _opt_states, s, a, r, n_s, n_a):
             params = self.get_params(_opt_states)
@@ -484,6 +479,7 @@ class Trainer:
             log_writer = LogWriter(log_path)
 
             out_cnt = 0
+            total_reward_mean = 0.0
             total_reward = [0.0] * len(self.__env.get_agents())
             for step, (fin_all, agents) in tqdm(enumerate(self.__env.evolve())):
                 out_infos = {}
@@ -525,6 +521,7 @@ class Trainer:
                     out_cnt += 1
             
             # after episode
+            total_reward_mean = onp.array(total_reward).mean()
             state_shape = self.__env.state_shape
             s = onp.zeros(state_shape, dtype = onp.float32)
             a = onp.zeros((state_shape[0], EnAction.num), dtype = onp.float32)
@@ -546,10 +543,10 @@ class Trainer:
                     if val >= state_shape[0]:
                         learn_cnt, loss_val = self.__env.shared_nn.update(gamma, s, a, r, n_s, n_a)
                         with open(dst_dir.parent.joinpath("loss.csv"), "a") as f:
-                            f.write("{},{},{}\n".format(trial, learn_cnt, loss_val))
+                            f.write("{},{},{},{}\n".format(trial, learn_cnt, total_reward_mean, loss_val))
                         print("episode={},learn_cnt={},loss={}".format(trial, learn_cnt, loss_val))
                         val = 0
-            print("total_reward_mean={}".format(onp.array(total_reward).mean()))
+            print("total_reward_mean={}".format(total_reward_mean))
             #movie_cmd = "cd \"{}\" && ffmpeg -r 10 -i %d.png -vcodec libx264 -pix_fmt yuv420p \"{}\"".format(dst_png_dir.resolve(), dst_png_dir.parent.joinpath("out.mp4").resolve())
             #subprocess.run(movie_cmd)
 
