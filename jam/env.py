@@ -139,6 +139,7 @@ class Environment:
         other_agents = self.__agents[:agent_idx] + self.__agents[agent_idx + 1:]
         assert(len(other_agents) == len(self.__agents) - 1)
         for other_agent in other_agents:
+            break
             if own.hit_with(other_agent):
                 reward += (-1.0)
         # approach
@@ -242,9 +243,15 @@ class SharedNetwork:
         omega = o_m + jnp.exp(o_ls) * jrandom.normal(rng_o)
         action = (accel, omega)
         return action
-    def __action_entropy(self, params, state):
+    def __log_Pi(self, params, state, action):
+        a = action[:, EnAction.accel]
+        o = action[:, EnAction.omega]
+
         a_m, a_lsig, o_m, o_lsig = self.__apply_Pi(params, state)
-        return 2 * 0.5 * (1.0 + jnp.log(2.0 * jnp.pi)) + a_lsig + o_lsig
+        a_sig = jnp.exp(a_lsig)
+        o_sig = jnp.exp(o_lsig)
+        log_pi = - ((a - a_m) ** 2) / (2 * (a_sig ** 2)) - ((o - o_m) ** 2) / (2 * (o_sig ** 2)) - 2.0 * 0.5 * jnp.log(2 * jnp.pi) - a_lsig - o_lsig
+        return log_pi
     def __apply_Q(self, params, state, action):
         se_params = params["se"]
         se_feature = self.__apply_fun["se"](se_params, state)
@@ -255,12 +262,12 @@ class SharedNetwork:
         return nn_out.flatten()
     def update(self, gamma, s, a, r, n_s, n_a):
         apply_Q = self.__apply_Q
-        action_entropy = self.__action_entropy
+        log_Pi = self.__log_Pi
         def J_q(params, s, a, r, n_s, n_a):
-            next_V = apply_Q(params, n_s, n_a) + action_entropy(params, n_s)
+            next_V = apply_Q(params, n_s, n_a) - log_Pi(params, n_s, n_a)
             return 0.5 * (apply_Q(params, s, a) - (r + gamma * next_V)) ** 2
         def J_pi(params, s, a):
-            return - action_entropy(params, s) - apply_Q(params, s, a)
+            return log_Pi(params, s, a) - apply_Q(params, s, a)
         def loss(param_se, param_ae, param_pd, param_vd, s, a, r, n_s, n_a):
             params = {  "se" : param_se,
                         "ae" : param_ae,
@@ -570,11 +577,11 @@ from jax.experimental.optimizers import adam
 from dataset.fashion_mnist import FashionMnist
 
 def nn(cn):
-    return serial(  Conv( 8, (7, 7), (1, 1), "VALID"), Tanh,
-                    Conv(16, (5, 5), (1, 1), "VALID"), Tanh,
-                    Conv(16, (3, 3), (1, 1), "VALID"), Tanh,
-                    Conv(32, (3, 3), (1, 1), "VALID"), Tanh,
-                    Conv(32, (3, 3), (1, 1), "VALID"), Tanh,
+    return serial(  Conv( 8, (7, 7), (1, 1), "SAME"), Tanh,
+                    Conv(16, (5, 5), (1, 1), "SAME"), Tanh,
+                    Conv(16, (3, 3), (1, 1), "SAME"), Tanh,
+                    Conv(32, (3, 3), (1, 1), "SAME"), Tanh,
+                    Conv(32, (3, 3), (1, 1), "SAME"), Tanh,
                     Flatten,
                     Dense(64), Tanh,
                     Dense(2)
