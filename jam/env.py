@@ -1,9 +1,12 @@
 #coding: utf-8
+from os import stat
 import time
 import numpy as onp
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
+from jax.experimental.stax import serial, parallel, Dense, Tanh, Conv, Flatten, FanOut, FanInSum, Identity, BatchNorm
+from jax.experimental.optimizers import adam, sgd
 from PIL import Image, ImageDraw, ImageOps
 from pathlib import Path
 from tqdm import tqdm
@@ -201,73 +204,77 @@ class SharedNetwork:
 
         feature_num = 128
         lr = 1E-3
-        self.__state_shape = (batch_size, pcpt_h, pcpt_w, EnChannel.num)
+        SharedNetwork.__state_shape = (batch_size, pcpt_h, pcpt_w, EnChannel.num)
         action_shape = (batch_size, EnAction.num)
         feature_shape = (batch_size, feature_num)
 
-        self.__apply_fun = {}
+        SharedNetwork.__apply_fun = {}
         self.__opt_init = {}
-        self.__opt_update = {}
-        self.__get_params = {}
-        self.__opt_states = {}
+        SharedNetwork.__opt_update = {}
+        SharedNetwork.__get_params = {}
+        SharedNetwork.__opt_states = {}
         for k, nn, input_shape, output_num, _rng in [
-            ("se", SharedNetwork.state_encoder, self.__state_shape, feature_num, rng1),
+            ("se", SharedNetwork.state_encoder, SharedNetwork.__state_shape, feature_num, rng1),
             ("ae", SharedNetwork.action_encoder, action_shape, feature_num, rng2),
             ("pd", SharedNetwork.policy_decoder, feature_shape, EnAction.num * EnDist.num, rng3),
             ("vd", SharedNetwork.value_decoder, feature_shape, (1,), rng4),
             ]:
-            init_fun, self.__apply_fun[k] = nn(output_num)
-            self.__opt_init[k], self.__opt_update[k], self.__get_params[k] = adam(lr)
+            init_fun, SharedNetwork.__apply_fun[k] = nn(output_num)
+            self.__opt_init[k], SharedNetwork.__opt_update[k], SharedNetwork.__get_params[k] = sgd(lr)
             _, init_params = init_fun(_rng, input_shape)
-            self.__opt_states[k] = self.__opt_init[k](init_params)
+            SharedNetwork.__opt_states[k] = self.__opt_init[k](init_params)
         
         if init_weight_path is not None:
             if Path(init_weight_path).exists():
                 self.__load(init_weight_path)
         self.__learn_cnt = 0
-    def get_params(self, opt_states):
+    @staticmethod
+    def get_params(opt_states):
         params = {}
         for k, opt_state in opt_states.items():
-            params[k] = self.__get_params[k](opt_state)
+            params[k] = SharedNetwork.__get_params[k](opt_state)
         return params
-    def __apply_Pi(self, params, state):
-        if state.ndim != len(self.__state_shape):
+    @staticmethod
+    def __apply_Pi(params, state):
+        if state.ndim != len(SharedNetwork.__state_shape):
             state = state.reshape(tuple([1] + list(state.shape)))
         se_params = params["se"]
-        feature = self.__apply_fun["se"](se_params, state)
+        feature = SharedNetwork.__apply_fun["se"](se_params, state)
         pd_params = params["pd"]
-        nn_out = self.__apply_fun["pd"](pd_params, feature).flatten()
+        nn_out = SharedNetwork.__apply_fun["pd"](pd_params, feature).flatten()
         a_m =  nn_out[EnAction.accel * EnDist.num + EnDist.mean]
         a_ls = nn_out[EnAction.accel * EnDist.num + EnDist.log_sigma]
         o_m =  nn_out[EnAction.omega * EnDist.num + EnDist.mean]
         o_ls = nn_out[EnAction.omega * EnDist.num + EnDist.log_sigma]
         return a_m, a_ls, o_m, o_ls
     def decide_action(self, state):
-        a_m, a_ls, o_m, o_ls = self.__apply_Pi(self.get_params(self.__opt_states), state)
+        a_m, a_ls, o_m, o_ls = self.__apply_Pi(SharedNetwork.get_params(self.__opt_states), state)
         self.__rng, rng_a, rng_o = jrandom.split(self.__rng, 3)
         accel = a_m + jnp.exp(a_ls) * jrandom.normal(rng_a)
         omega = o_m + jnp.exp(o_ls) * jrandom.normal(rng_o)
         action = (accel, omega)
         return action
-    def __log_Pi(self, params, state, action):
+    @staticmethod
+    def __log_Pi(params, state, action):
         a = action[:, EnAction.accel]
         o = action[:, EnAction.omega]
 
-        a_m, a_lsig, o_m, o_lsig = self.__apply_Pi(params, state)
+        a_m, a_lsig, o_m, o_lsig = SharedNetwork.__apply_Pi(params, state)
         a_sig = jnp.exp(a_lsig)
         o_sig = jnp.exp(o_lsig)
         log_pi = - ((a - a_m) ** 2) / (2 * (a_sig ** 2)) - ((o - o_m) ** 2) / (2 * (o_sig ** 2)) - 2.0 * 0.5 * jnp.log(2 * jnp.pi) - a_lsig - o_lsig
         return log_pi
-    def __apply_Q(self, params, state, action):
+    @staticmethod
+    def __apply_Q(params, state, action):
         se_params = params["se"]
-        se_feature = self.__apply_fun["se"](se_params, state)
+        se_feature = SharedNetwork.__apply_fun["se"](se_params, state)
         ae_params = params["ae"]
-        ae_feature = self.__apply_fun["ae"](ae_params, action)
+        ae_feature = SharedNetwork.__apply_fun["ae"](ae_params, action)
         vd_params = params["vd"]
-        nn_out = self.__apply_fun["vd"](vd_params, se_feature + ae_feature)
+        nn_out = SharedNetwork.__apply_fun["vd"](vd_params, se_feature + ae_feature)
         return nn_out.flatten()
     def save(self, weight_path):
-        params = self.get_params(self.__opt_states)
+        params = SharedNetwork.get_params(self.__opt_states)
         with open(weight_path, 'wb') as f:
             pickle.dump(params, f)
     def __load(self, weight_path):
@@ -275,38 +282,41 @@ class SharedNetwork:
             params = pickle.load(f)
         for k in self.__opt_states.keys():
             self.__opt_states[k] = self.__opt_init[k](params[k])
-
+    @staticmethod
+    def __J_q(params, s, a, r, n_s, n_a, gamma):
+        next_V = SharedNetwork.__apply_Q(params, n_s, n_a) - SharedNetwork.__log_Pi(params, n_s, n_a)
+        return 0.5 * (SharedNetwork.__apply_Q(params, s, a) - (r + gamma * next_V)) ** 2
+    @staticmethod
+    def __J_pi(params, s, a):
+        return SharedNetwork.__log_Pi(params, s, a) - SharedNetwork.__apply_Q(params, s, a)
+    @staticmethod
+    def __loss(param_se, param_ae, param_pd, param_vd, s, a, r, n_s, n_a, gamma):
+        params = {  "se" : param_se,
+                    "ae" : param_ae,
+                    "pd" : param_pd,
+                    "vd" : param_vd,
+                    }
+        return jnp.mean(SharedNetwork.__J_q(params, s, a, r, n_s, n_a, gamma) + SharedNetwork.__J_pi(params, s, a))
+    @staticmethod
+    @jax.jit
+    def __update(_idx, opt_states, s, a, r, n_s, n_a, gamma):
+        params = SharedNetwork.get_params(opt_states)
+        param_se = params["se"]
+        param_ae = params["ae"]
+        param_pd = params["pd"]
+        param_vd = params["vd"]
+        
+        loss_val = 0.0
+        for i, k in enumerate(SharedNetwork.__opt_update.keys()):
+            loss_val1, grad_val = jax.value_and_grad(SharedNetwork.__loss, argnums = i)(param_se, param_ae, param_pd, param_vd, s, a, r, n_s, n_a, gamma)
+            if 0:#jnp.isinf(loss_val1).any() or jnp.isnan(loss_val1).any():
+                pass
+            else:
+                opt_states[k] = SharedNetwork.__opt_update[k](_idx, grad_val, opt_states[k])
+            loss_val += loss_val1
+        return _idx + 1, opt_states, loss_val
     def update(self, gamma, s, a, r, n_s, n_a):
-        apply_Q = self.__apply_Q
-        log_Pi = self.__log_Pi
-        def J_q(params, s, a, r, n_s, n_a):
-            next_V = apply_Q(params, n_s, n_a) - log_Pi(params, n_s, n_a)
-            return 0.5 * (apply_Q(params, s, a) - (r + gamma * next_V)) ** 2
-        def J_pi(params, s, a):
-            return log_Pi(params, s, a) - apply_Q(params, s, a)
-        def loss(param_se, param_ae, param_pd, param_vd, s, a, r, n_s, n_a):
-            params = {  "se" : param_se,
-                        "ae" : param_ae,
-                        "pd" : param_pd,
-                        "vd" : param_vd,
-                        }
-            return jnp.mean(J_q(params, s, a, r, n_s, n_a) + J_pi(params, s, a))
-        #@jax.jit
-        def _update(_idx, _opt_states, s, a, r, n_s, n_a):
-            params = self.get_params(_opt_states)
-            param_se = params["se"]
-            param_ae = params["ae"]
-            param_pd = params["pd"]
-            param_vd = params["vd"]
-
-            for i, k in enumerate(self.__opt_update.keys()):
-                loss_val, grad_val = jax.value_and_grad(loss, argnums = i)(param_se, param_ae, param_pd, param_vd, s, a, r, n_s, n_a)
-                if jnp.isinf(loss_val).any() or jnp.isnan(loss_val).any():
-                    pass
-                else:
-                    _opt_states[k] = self.__opt_update[k](_idx, grad_val, _opt_states[k])
-            return _idx + 1, _opt_states, loss_val
-        self.__learn_cnt, self.__opt_states, loss_val = _update(self.__learn_cnt, self.__opt_states, s, a, r, n_s, n_a)
+        self.__learn_cnt, self.__opt_states, loss_val = SharedNetwork.__update(self.__learn_cnt, self.__opt_states, s, a, r, n_s, n_a, gamma)
         return self.__learn_cnt, loss_val
 
     @staticmethod
@@ -475,7 +485,7 @@ class Trainer:
     def __init__(self, seed):
         rng = jrandom.PRNGKey(seed)
         self.__rng, rng = jrandom.split(rng)
-        batch_size = 8
+        batch_size = 128
         map_h = 10.0
         map_w = 10.0
         pcpt_h = 32
@@ -487,7 +497,7 @@ class Trainer:
         init_weight_path = None
 
         self.__env = Environment(rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
-    def learn_episode(self):
+    def learn_episode(self, verbose = False):
         log_writer = None
         for trial in range(1000):
             self.__env.reset()
@@ -505,7 +515,11 @@ class Trainer:
             out_cnt = 0
             total_reward_mean = 0.0
             total_reward = [0.0] * len(self.__env.get_agents())
-            for step, (fin_all, agents) in tqdm(enumerate(self.__env.evolve())):
+            if verbose:
+                loop_fun = tqdm
+            else:
+                loop_fun = lambda x : x
+            for step, (fin_all, agents) in loop_fun(enumerate(self.__env.evolve())):
                 out_infos = {}
                 out_infos["step"] = step
                 out_infos["t"] = step * self.__env.dt
@@ -554,6 +568,7 @@ class Trainer:
             n_a = onp.zeros((state_shape[0], EnAction.num), dtype = onp.float32)
             gamma = self.__env.gamma
             val = 0
+            total_loss = []
             self.__rng, rng = jrandom.split(self.__rng)
             for i in jrandom.choice(rng, jnp.arange(len(self.__env.experiences)), (len(self.__env.experiences) * 10,)):
                 e = self.__env.experiences[i]
@@ -568,9 +583,11 @@ class Trainer:
                         learn_cnt, loss_val = self.__env.shared_nn.update(gamma, s, a, r, n_s, n_a)
                         with open(dst_dir.parent.joinpath("loss.csv"), "a") as f:
                             f.write("{},{},{},{}\n".format(trial, learn_cnt, total_reward_mean, loss_val))
-                        print("episode={},learn_cnt={},loss={}".format(trial, learn_cnt, loss_val))
+                        if verbose:
+                            print("{},{},{},{}".format(trial, learn_cnt, total_reward_mean, loss_val))
+                        total_loss.append(loss_val)
                         val = 0
-            print("total_reward_mean={}".format(total_reward_mean))
+            print("episode={},total_reward_mean={:.3f},loss_mean={:.3f}".format(trial, total_reward_mean, onp.array(total_loss).mean()))
             weight_path = dst_dir.joinpath("param.bin")
             self.__env.shared_nn.save(weight_path)
             #movie_cmd = "cd \"{}\" && ffmpeg -r 10 -i %d.png -vcodec libx264 -pix_fmt yuv420p \"{}\"".format(dst_png_dir.resolve(), dst_png_dir.parent.joinpath("out.mp4").resolve())
@@ -580,96 +597,6 @@ def main():
     seed = 1
     trainer = Trainer(seed)
     trainer.learn_episode()
-    
-#coding: utf-8
-import subprocess
-import sys
-sys.path.append("jax")
-import time
-from pathlib import Path
-from PIL import Image
-from enum import IntEnum, auto, unique
-import jax
-import jax.numpy as jnp
-from jax.experimental.stax import serial, parallel, Dense, Tanh, Conv, Flatten, FanOut, FanInSum, Identity, BatchNorm
-from jax.experimental.optimizers import adam
-from dataset.fashion_mnist import FashionMnist
-
-def nn(cn):
-    return serial(  Conv( 8, (7, 7), (1, 1), "SAME"), Tanh,
-                    Conv(16, (5, 5), (1, 1), "SAME"), Tanh,
-                    Conv(16, (3, 3), (1, 1), "SAME"), Tanh,
-                    Conv(32, (3, 3), (1, 1), "SAME"), Tanh,
-                    Conv(32, (3, 3), (1, 1), "SAME"), Tanh,
-                    Flatten,
-                    Dense(64), Tanh,
-                    Dense(2)
-    )
-
-class MnistTrainer:
-    def __init__(self, rng):
-        self.__rng = rng
-        self.__rng_train, self.__rng_test, rng_param = jax.random.split(self.__rng, 3)
-        self.__batch_size = 128
-        class_num = 10
-        lr = 1E-4
-
-        init_fun, self.__apply_fun = nn(class_num)
-        opt_init, self.__opt_update, self.__get_params = adam(lr)
-        input_shape = (self.__batch_size, 28, 28, 1)
-        _, init_params = init_fun(rng_param, input_shape)
-        self.__opt_state = opt_init(init_params)
-
-    def __loss(self, params, x, y):
-        focal_gamma = 2.0
-        y_pred = self.__apply_fun(params, x)
-        y_pred = jax.nn.softmax(y_pred)
-        loss = (- y * ((1.0 - y_pred) ** focal_gamma) * jnp.log(y_pred + 1E-10)).sum(axis = -1).mean()
-        return loss
-    def learn(self):
-        @jax.jit
-        def update(_idx, _opt_state, _x, _y):
-            params = self.__get_params(_opt_state)
-            loss_val, grad_val = jax.value_and_grad(self.__loss)(params, _x, _y)
-            _opt_state = self.__opt_update(_idx, grad_val, _opt_state)
-            return _idx + 1, _opt_state, loss_val
-        tmp_dir_path = "tmp"
-        train_data = FashionMnist(
-            rng = self.__rng_train,
-            batch_size = self.__batch_size,
-            data_type = "train",
-            one_hot = True,
-            dequantize = True,
-            flatten = False,
-            dir_path = tmp_dir_path,
-        )
-        idx = 0
-        run_loss = 0.0
-        run_cnt = 0
-        epoch_cnt = 0.0
-        reach_epoch = 0
-        while True:
-            x, y = train_data.sample()
-
-            idx, self.__opt_state, loss_val = update(idx, self.__opt_state, x, y)
-
-            run_loss += loss_val
-            run_cnt += 1
-            epoch_cnt += (self.__batch_size) / 60000
-            
-            if epoch_cnt >= reach_epoch:
-                reach_epoch += 1
-
-                cmd = "{},{}".format(
-                    epoch_cnt,
-                    run_loss / run_cnt
-                )
-                print(cmd)
-                run_loss = 0.0
-                run_cnt = 0
-
-                if reach_epoch >= 150:
-                    break
 
 if __name__ == "__main__":
     main()

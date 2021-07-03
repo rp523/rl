@@ -57,8 +57,10 @@ class ObjectBase:
         a = jnp.clip(a, -a_max, a_max)
         if v + a * dt > v_max:  # max speed limit
             dt_m = (v_max - v) / a
-            dy = ObjectBase.__calc_dy(v, a, theta, omega, dt_m, v_max, a_max)
-            dy += ObjectBase.__calc_dy(v_max, 0.0, theta + omega * dt_m, omega, dt - dt_m, v_max, a_max)
+            if dt_m > ObjectBase.__eps:
+                dy = ObjectBase.__calc_dy(v, a, theta, omega, dt_m, v_max, a_max)
+            if dt - dt_m > ObjectBase.__eps:
+                dy += ObjectBase.__calc_dy(v_max, 0.0, theta + omega * dt_m, omega, dt - dt_m, v_max, a_max)
         elif v + a * dt < 0.0:  # min speed limit
             dt_m = v / a
             if dt_m > 0.0:
@@ -86,8 +88,10 @@ class ObjectBase:
         a = jnp.clip(a, -a_max, a_max)
         if v + a * dt > v_max:  # max speed limit
             dt_m = (v_max - v) / a
-            dx = ObjectBase.__calc_dx(v, a, theta, omega, dt_m, v_max, a_max)
-            dx += ObjectBase.__calc_dx(v_max, 0.0, theta + omega * dt_m, omega, dt - dt_m, v_max, a_max)
+            if dt_m > ObjectBase.__eps:
+                dx = ObjectBase.__calc_dx(v, a, theta, omega, dt_m, v_max, a_max)
+            if dt - dt_m > ObjectBase.__eps:
+                dx += ObjectBase.__calc_dx(v_max, 0.0, theta + omega * dt_m, omega, dt - dt_m, v_max, a_max)
         elif v + a * dt < 0.0:  # min speed limit
             dt_m = v / a
             if dt_m > 0.0:
