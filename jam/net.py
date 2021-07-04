@@ -6,13 +6,15 @@ import pickle
 from common import *
 from jax.experimental.stax import serial, parallel, Dense, Tanh, Conv, Flatten, FanOut, FanInSum, Identity, BatchNorm
 from jax.experimental.optimizers import adam, sgd
+import sys
+sys.path.append("/home/isgsktyktt/work/jax")
+from model.maker.model_maker import net_maker
 
 class SharedNetwork:
     def __init__(self, rng, init_weight_path, batch_size, pcpt_h, pcpt_w):
         self.__rng, rng1, rng2, rng3, rng4, rng5 = jrandom.split(rng, 6)
 
         feature_num = 128
-        lr = 1E-4
         SharedNetwork.__state_shape = (batch_size, pcpt_h, pcpt_w, EnChannel.num)
         action_shape = (batch_size, EnAction.num)
         feature_shape = (batch_size, feature_num)
@@ -22,11 +24,11 @@ class SharedNetwork:
         SharedNetwork.__opt_update = {}
         SharedNetwork.__get_params = {}
         SharedNetwork.opt_states = {}
-        for k, nn, input_shape, output_num, _rng in [
-            ("se", SharedNetwork.state_encoder, SharedNetwork.__state_shape, feature_num, rng1),
-            ("ae", SharedNetwork.action_encoder, action_shape, feature_num, rng2),
-            ("pd", SharedNetwork.policy_decoder, feature_shape, EnAction.num * EnDist.num, rng3),
-            ("vd", SharedNetwork.value_decoder, feature_shape, (1,), rng4),
+        for k, nn, input_shape, output_num, _rng, lr in [
+            ("se", SharedNetwork.state_encoder, SharedNetwork.__state_shape, feature_num, rng1, 1E-3),
+            ("ae", SharedNetwork.action_encoder, action_shape, feature_num, rng2, 1E-4),
+            ("pd", SharedNetwork.policy_decoder, feature_shape, EnAction.num * EnDist.num, rng3, 1E-3),
+            ("vd", SharedNetwork.value_decoder, feature_shape, (1,), rng4, 1E-4),
             ]:
             init_fun, SharedNetwork.__apply_fun[k] = nn(output_num)
             self.__opt_init[k], SharedNetwork.__opt_update[k], SharedNetwork.__get_params[k] = sgd(lr)
@@ -107,9 +109,12 @@ class SharedNetwork:
                     }
         j_q = SharedNetwork.J_q(params, s, a, r, n_s, n_a, gamma)
         j_pi = SharedNetwork.J_pi(params, s, a)
-        return jnp.mean(j_q + j_pi)
+        loss = jnp.mean(j_q + j_pi)
+        for param in params.values():
+            loss += 1E-2 * net_maker.weight_decay(param)
+        return loss
     @staticmethod
-    @jax.jit
+    #@jax.jit
     def __update(_idx, opt_states, s, a, r, n_s, n_a, gamma):
         params = SharedNetwork.get_params(opt_states)
         param_se = params["se"]

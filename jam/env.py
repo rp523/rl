@@ -33,7 +33,6 @@ class Environment:
         self.__rng, rng = jrandom.split(rng)
         self.__batch_size = batch_size
         self.__state_shape = (self.__batch_size, pcpt_h, pcpt_w, EnChannel.num)
-        lr = 1E-2
         self.__shared_nn = SharedNetwork(rng, init_weight_path, self.__batch_size, pcpt_h, pcpt_w)
         self.__n_ped_max = n_ped_max
         self.__map_h = map_h
@@ -206,11 +205,12 @@ class Trainer:
 
         self.__env = Environment(rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
     def learn_episode(self, verbose = True):
+        dst_base_dir = Path("tmp")
         log_writer = None
+        all_log_writer = LogWriter(dst_base_dir.joinpath("loss.csv"))
         for trial in range(1000):
             self.__env.reset()
 
-            dst_base_dir = Path("tmp")
             dst_dir = dst_base_dir.joinpath("trial{}".format(trial))
             if not dst_dir.exists():
                 dst_dir.mkdir(parents = True)
@@ -219,7 +219,7 @@ class Trainer:
             if log_writer is not None:
                 del log_writer
             log_writer = LogWriter(log_path)
-
+        
             out_cnt = 0
             total_reward_mean = 0.0
             total_reward = [0.0] * len(self.__env.get_agents())
@@ -275,15 +275,23 @@ class Trainer:
                     val += 1
                     if val >= state_shape[0]:
                         learn_cnt, loss_val = self.__env.shared_nn.update(gamma, s, a, r, n_s, n_a)
-                        with open(dst_dir.parent.joinpath("loss.csv"), "a") as f:
-                            f.write("{},{},{},{}\n".format(trial, learn_cnt, total_reward_mean, loss_val))
+                        all_info = {}
+                        all_info["episode"] = trial
+                        all_info["learn_cnt"] = learn_cnt
+                        all_info["total_reward_mean"] = float(total_reward_mean)
+                        all_info["loss_val"] = float(loss_val)
+                        all_info["J_pi"] = float(SharedNetwork.J_pi(   SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean())
+                        all_info["J_q"] = float(SharedNetwork.J_q(    SharedNetwork.get_params(SharedNetwork.opt_states), s, a, r, n_s, n_a, gamma).mean())
+                        all_info["log_Pi"] = float(SharedNetwork.log_Pi( SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean())
+                        all_info["Q"] = float(SharedNetwork.apply_Q(SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean())
+                        all_log_writer.write(all_info)
                         if verbose:
-                            print("{},{},{},{}".format(trial, learn_cnt, total_reward_mean, loss_val))
-                            print(  SharedNetwork.J_pi(   SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean(),
-                                    SharedNetwork.J_q(    SharedNetwork.get_params(SharedNetwork.opt_states), s, a, r, n_s, n_a, gamma).mean(),
-                                    SharedNetwork.log_Pi( SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean(),
-                                    SharedNetwork.apply_Q(SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean(),
-                                    )
+                            for value in all_info.values():
+                                if isinstance(value, float):
+                                    print("{:.3f}".format(value), end = ",")
+                                else:
+                                    print(value, end = ",")
+                            print()
                         total_loss.append(loss_val)
                         val = 0
             print("episode={},learn_cnt={},total_reward_mean={:.3f},loss_mean={:.3f}".format(trial, learn_cnt, total_reward_mean, onp.array(total_loss).mean()))
