@@ -5,17 +5,17 @@ import numpy as onp
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
-from jax.experimental.stax import serial, parallel, Dense, Tanh, Conv, Flatten, FanOut, FanInSum, Identity, BatchNorm
-from jax.experimental.optimizers import adam, sgd
-from PIL import Image, ImageDraw, ImageOps
 from pathlib import Path
 from tqdm import tqdm
-from enum import IntEnum, auto
 from collections import namedtuple, deque
 import subprocess
-import pickle
+
+from model import SharedNetwork
 from agent import PedestrianAgent
 from delay import DelayGen
+from common import *
+from observer import observe
+from log import LogWriter
 
 Experience = namedtuple("Experience",
                         [
@@ -189,302 +189,8 @@ class Environment:
             if fin_all:
                 break
             
-class EnAction(IntEnum):
-    accel = 0
-    omega = auto()
-    num = auto()
-class EnDist(IntEnum):
-    mean = 0
-    log_sigma = auto()
-    num = auto()
-
-class SharedNetwork:
-    def __init__(self, rng, init_weight_path, batch_size, pcpt_h, pcpt_w):
-        self.__rng, rng1, rng2, rng3, rng4, rng5 = jrandom.split(rng, 6)
-
-        feature_num = 128
-        lr = 1E-3
-        SharedNetwork.__state_shape = (batch_size, pcpt_h, pcpt_w, EnChannel.num)
-        action_shape = (batch_size, EnAction.num)
-        feature_shape = (batch_size, feature_num)
-
-        SharedNetwork.__apply_fun = {}
-        self.__opt_init = {}
-        SharedNetwork.__opt_update = {}
-        SharedNetwork.__get_params = {}
-        SharedNetwork.opt_states = {}
-        for k, nn, input_shape, output_num, _rng in [
-            ("se", SharedNetwork.state_encoder, SharedNetwork.__state_shape, feature_num, rng1),
-            ("ae", SharedNetwork.action_encoder, action_shape, feature_num, rng2),
-            ("pd", SharedNetwork.policy_decoder, feature_shape, EnAction.num * EnDist.num, rng3),
-            ("vd", SharedNetwork.value_decoder, feature_shape, (1,), rng4),
-            ]:
-            init_fun, SharedNetwork.__apply_fun[k] = nn(output_num)
-            self.__opt_init[k], SharedNetwork.__opt_update[k], SharedNetwork.__get_params[k] = sgd(lr)
-            _, init_params = init_fun(_rng, input_shape)
-            SharedNetwork.opt_states[k] = self.__opt_init[k](init_params)
-        
-        if init_weight_path is not None:
-            if Path(init_weight_path).exists():
-                self.__load(init_weight_path)
-        self.__learn_cnt = 0
-    @staticmethod
-    def get_params(opt_states):
-        params = {}
-        for k, opt_state in opt_states.items():
-            params[k] = SharedNetwork.__get_params[k](opt_state)
-        return params
-    @staticmethod
-    def apply_Pi(params, state):
-        if state.ndim != len(SharedNetwork.__state_shape):
-            state = state.reshape(tuple([1] + list(state.shape)))
-        se_params = params["se"]
-        feature = SharedNetwork.__apply_fun["se"](se_params, state)
-        pd_params = params["pd"]
-        nn_out = SharedNetwork.__apply_fun["pd"](pd_params, feature).flatten()
-        a_m =  nn_out[EnAction.accel * EnDist.num + EnDist.mean]
-        a_ls = nn_out[EnAction.accel * EnDist.num + EnDist.log_sigma]
-        o_m =  nn_out[EnAction.omega * EnDist.num + EnDist.mean]
-        o_ls = nn_out[EnAction.omega * EnDist.num + EnDist.log_sigma]
-        return a_m, a_ls, o_m, o_ls
-    def decide_action(self, state):
-        a_m, a_ls, o_m, o_ls = SharedNetwork.apply_Pi(SharedNetwork.get_params(SharedNetwork.opt_states), state)
-        self.__rng, rng_a, rng_o = jrandom.split(self.__rng, 3)
-        accel = a_m + jnp.exp(a_ls) * jrandom.normal(rng_a)
-        omega = o_m + jnp.exp(o_ls) * jrandom.normal(rng_o)
-        action = (accel, omega)
-        return action
-    @staticmethod
-    def log_Pi(params, state, action):
-        a = action[:, EnAction.accel]
-        o = action[:, EnAction.omega]
-
-        a_m, a_lsig, o_m, o_lsig = SharedNetwork.apply_Pi(params, state)
-        a_sig = jnp.exp(a_lsig)
-        o_sig = jnp.exp(o_lsig)
-        log_pi = - ((a - a_m) ** 2) / (2 * (a_sig ** 2)) - ((o - o_m) ** 2) / (2 * (o_sig ** 2)) - 2.0 * 0.5 * jnp.log(2 * jnp.pi) - a_lsig - o_lsig
-        return log_pi
-    @staticmethod
-    def apply_Q(params, state, action):
-        se_params = params["se"]
-        se_feature = SharedNetwork.__apply_fun["se"](se_params, state)
-        ae_params = params["ae"]
-        ae_feature = SharedNetwork.__apply_fun["ae"](ae_params, action)
-        vd_params = params["vd"]
-        nn_out = SharedNetwork.__apply_fun["vd"](vd_params, se_feature + ae_feature)
-        return nn_out.flatten()
-    def save(self, weight_path):
-        params = SharedNetwork.get_params(self.__opt_states)
-        with open(weight_path, 'wb') as f:
-            pickle.dump(params, f)
-    def __load(self, weight_path):
-        with open(weight_path, 'rb') as f:
-            params = pickle.load(f)
-        for k in self.__opt_states.keys():
-            self.__opt_states[k] = self.__opt_init[k](params[k])
-    @staticmethod
-    def J_q(params, s, a, r, n_s, n_a, gamma):
-        next_V = SharedNetwork.apply_Q(params, n_s, n_a) - SharedNetwork.log_Pi(params, n_s, n_a)
-        return 0.5 * (SharedNetwork.apply_Q(params, s, a) - (r + gamma * next_V)) ** 2
-    @staticmethod
-    def J_pi(params, s, a):
-        return SharedNetwork.log_Pi(params, s, a) - SharedNetwork.apply_Q(params, s, a)
-    @staticmethod
-    def __loss(param_se, param_ae, param_pd, param_vd, s, a, r, n_s, n_a, gamma):
-        params = {  "se" : param_se,
-                    "ae" : param_ae,
-                    "pd" : param_pd,
-                    "vd" : param_vd,
-                    }
-        j_q = SharedNetwork.J_q(params, s, a, r, n_s, n_a, gamma)
-        j_pi = SharedNetwork.J_pi(params, s, a)
-        return jnp.mean(j_q + j_pi)
-    @staticmethod
-    @jax.jit
-    def __update(_idx, opt_states, s, a, r, n_s, n_a, gamma):
-        params = SharedNetwork.get_params(opt_states)
-        param_se = params["se"]
-        param_ae = params["ae"]
-        param_pd = params["pd"]
-        param_vd = params["vd"]
-        
-        loss_val = 0.0
-        for i, k in enumerate(SharedNetwork.__opt_update.keys()):
-            loss_val1, grad_val = jax.value_and_grad(SharedNetwork.__loss, argnums = i)(param_se, param_ae, param_pd, param_vd, s, a, r, n_s, n_a, gamma)
-            if 0:#jnp.isinf(loss_val1).any() or jnp.isnan(loss_val1).any():
-                pass
-            else:
-                opt_states[k] = SharedNetwork.__opt_update[k](_idx, grad_val, opt_states[k])
-            loss_val += loss_val1
-        return _idx + 1, opt_states, loss_val
-    def update(self, gamma, s, a, r, n_s, n_a):
-        self.__learn_cnt, self.__opt_states, loss_val = SharedNetwork.__update(self.__learn_cnt, SharedNetwork.opt_states, s, a, r, n_s, n_a, gamma)
-        return self.__learn_cnt, loss_val
-
-    @staticmethod
-    def state_encoder(output_num):
-        return serial(  Conv( 8, (7, 7), (1, 1), "VALID"), Tanh,
-                        Conv(16, (5, 5), (1, 1), "VALID"), Tanh,
-                        Conv(16, (3, 3), (1, 1), "VALID"), Tanh,
-                        Conv(32, (3, 3), (1, 1), "VALID"), Tanh,
-                        Conv(32, (3, 3), (1, 1), "VALID"), Tanh,
-                        Flatten,
-                        Dense(output_num)
-        )
-    @staticmethod
-    def action_encoder(output_num):
-        return serial(  Dense(128), Tanh,
-                        Dense(128), Tanh,
-                        Dense(128), Tanh,
-                        Dense(output_num)
-        )
-    @staticmethod
-    def policy_decoder(output_num):
-        return serial(  Dense(128), Tanh,
-                        Dense(128), Tanh,
-                        Dense(128), Tanh,
-                        Dense(output_num)
-        )
-    def value_decoder(output_num):
-        return serial(  Dense(128), Tanh,
-                        Dense(128), Tanh,
-                        Dense(128), Tanh,
-                        Dense(1),
-                        Flatten
-        )
-
-WHITE  = (255, 255, 255)
-RED    = (255, 40,    0)
-YELLOW = (250, 245,   0)
-GREEN  = ( 53, 161, 107)
-BLUE   = (  0,  65, 255)
-SKY    = (102, 204, 255)
-PINK   = (255, 153, 160)
-ORANGE = (255, 153,   0)
-PURPLE = (154,   0, 121)
-BROWN  = (102,  51,   0)
-def make_state_img(agents, map_h, map_w, pcpt_h, pcpt_w):
-    cols = (WHITE, RED, YELLOW, GREEN, BLUE, SKY, PINK, ORANGE, PURPLE, BROWN)
-    img = Image.fromarray(onp.array(jnp.zeros((pcpt_h, pcpt_w, 3), dtype = jnp.uint8)))
-    dr = ImageDraw.Draw(img)
-    for a, agent in enumerate(agents):
-        y = agent.y / map_h * pcpt_h
-        x = agent.x / map_w * pcpt_w
-        ry = agent.radius_m / map_h * pcpt_h 
-        rx = agent.radius_m / map_w * pcpt_w
-        
-        py0 = jnp.clip(int(y + 0.5), 0, pcpt_h - 1)
-        px0 = jnp.clip(int(x + 0.5), 0, pcpt_w - 1)
-        py1 = jnp.clip(int((y + ry * onp.sin(agent.theta)) + 0.5), 0, pcpt_h - 1)
-        px1 = jnp.clip(int((x + rx * onp.cos(agent.theta)) + 0.5), 0, pcpt_w - 1)
-        dr.line((px0, py0, px1, py1), fill = cols[a], width = 1)
-        
-        py0 = jnp.clip(int((y - ry) + 0.5), 0, pcpt_h - 1)
-        py1 = jnp.clip(int((y + ry) + 0.5), 0, pcpt_h - 1)
-        px0 = jnp.clip(int((x - rx) + 0.5), 0, pcpt_w - 1)
-        px1 = jnp.clip(int((x + rx) + 0.5), 0, pcpt_w - 1)
-        dr.ellipse((px0, py0, px1, py1), outline = cols[a], width = 1)
-
-        tgt_y = agent.tgt_y / map_h * pcpt_h 
-        tgt_x = agent.tgt_x / map_w * pcpt_w
-        tgt_py = jnp.clip(int(tgt_y + 0.5), 0, pcpt_h)
-        tgt_px = jnp.clip(int(tgt_x + 0.5), 0, pcpt_w)
-        lin_siz = 5
-        dr.line((tgt_px - lin_siz, tgt_py - lin_siz, tgt_px + lin_siz, tgt_py + lin_siz), width = 1, fill = cols[a])
-        dr.line((tgt_px - lin_siz, tgt_py + lin_siz, tgt_px + lin_siz, tgt_py - lin_siz), width = 1, fill = cols[a])
-    dr.rectangle((0, 0, pcpt_w - 1, pcpt_h - 1), outline = WHITE)
-    return img
-
-def rotate(y, x, theta):
-    rot_x = onp.cos(theta) * x - onp.sin(theta) * y
-    rot_y = onp.sin(theta) * x + onp.cos(theta) * y
-    return rot_y, rot_x
-class EnChannel(IntEnum):
-    occupy = 0
-    vy = auto()
-    vx = auto()
-    num = auto()
-def observe(agents, agent_idx, map_h, map_w, pcpt_h, pcpt_w):
-    state = onp.zeros((pcpt_h, pcpt_w, EnChannel.num), dtype = onp.float32)
-
-    own_obs_y = 0.5 * map_h
-    own_obs_x = 0.5 * map_w
-    
-    own = agents[agent_idx]
-    for other in (agents[:agent_idx] + agents[agent_idx + 1:]):
-        rel_y = other.y - own.y
-        rel_x = other.x - own.x
-        obs_y, obs_x = rotate(rel_y, rel_x, 0.5 * onp.pi - own.theta)
-        obs_py0 = int((obs_y - other.radius_m + own_obs_y) / map_h * pcpt_h + 0.5)
-        obs_py1 = int((obs_y + other.radius_m + own_obs_y) / map_h * pcpt_h + 0.5)
-        obs_px0 = int((obs_x - other.radius_m + own_obs_x) / map_w * pcpt_w + 0.5)
-        obs_px1 = int((obs_x + other.radius_m + own_obs_x) / map_w * pcpt_w + 0.5)
-        if  (obs_py0 <= pcpt_h - 1) and (0 <= obs_py1) and \
-            (obs_px0 <= pcpt_w - 1) and (0 <= obs_px1):
-            state[max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.occupy] = 1.0
-            state[max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.vy    ] = other.v * onp.cos(own.theta - other.theta)
-            state[max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.vx    ] = other.v * onp.sin(own.theta - other.theta)
-
-    rel_y = own.tgt_y - own.y
-    rel_x = own.tgt_x - own.x
-    obs_y, obs_x = rotate(rel_y, rel_x, 0.5 * onp.pi - own.theta)
-    obs_py0 = int((obs_y - own.radius_m + own_obs_y) / map_h * pcpt_h + 0.5)
-    obs_py1 = int((obs_y + own.radius_m + own_obs_y) / map_h * pcpt_h + 0.5)
-    obs_px0 = int((obs_x - own.radius_m + own_obs_x) / map_w * pcpt_w + 0.5)
-    obs_px1 = int((obs_x + own.radius_m + own_obs_x) / map_w * pcpt_w + 0.5)
-    if  (obs_py0 <= pcpt_h - 1) and (0 <= obs_py1) and \
-        (obs_px0 <= pcpt_w - 1) and (0 <= obs_px1):
-        state[max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.occupy] = - 1.0
-
-    obs_y = 0.0
-    obs_x = 0.0
-    obs_py0 = int((obs_y - own.radius_m + own_obs_y) / map_h * pcpt_h + 0.5)
-    obs_py1 = int((obs_y + own.radius_m + own_obs_y) / map_h * pcpt_h + 0.5)
-    obs_px0 = int((obs_x - own.radius_m + own_obs_x) / map_w * pcpt_w + 0.5)
-    obs_px1 = int((obs_x + own.radius_m + own_obs_x) / map_w * pcpt_w + 0.5)
-    if  (obs_py0 <= pcpt_h - 1) and (0 <= obs_py1) and \
-        (obs_px0 <= pcpt_w - 1) and (0 <= obs_px1):
-        state[max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.vy    ] = own.v
-    
-    return state
-
-class LogWriter:
-    def __init__(self, dst_path):
-        if not dst_path.parent.exists():
-            dst_path.parent.mkdir(parents = True)
-        self.__fp = open(dst_path, "w")
-        self.__first = True
-
-    def write(self, out_infos):
-        if self.__first:
-            LogWriter.__write(self.__fp, True, out_infos)
-            self.__first = False
-        LogWriter.__write(self.__fp, False, out_infos)
-
-    @staticmethod
-    def __write(fp, header, out_infos):
-        assert(not (fp is None))
-        for i, (key, val) in enumerate(out_infos.items()):
-            if header:
-                out = key
-            else:
-                out = val
-            fp.write("{},".format(out))
-        fp.write("\n")
-
-def get_concat_h(im1, im2):
-    dst = Image.new('RGB', (im1.width + im2.width, im1.height))
-    dst.paste(im1, (0, 0))
-    dst.paste(im2, (im1.width, 0))
-    return dst
-def get_concat_v(im1, im2):
-    dst = Image.new('RGB', (im1.width, im1.height + im2.height))
-    dst.paste(im1, (0, 0))
-    dst.paste(im2, (0, im1.height))
-    return dst
-
 class Trainer:
-    def __init__(self, seed):
+    def __init__(self, seed = 0):
         rng = jrandom.PRNGKey(seed)
         self.__rng, rng = jrandom.split(rng)
         batch_size = 128
@@ -492,14 +198,14 @@ class Trainer:
         map_w = 10.0
         pcpt_h = 32
         pcpt_w = 32
-        max_t = 2.0
+        max_t = 100.0
         dt = 0.5
         n_ped_max = 4
         half_decay_dt = 10.0
         init_weight_path = None
 
         self.__env = Environment(rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
-    def learn_episode(self, verbose = False):
+    def learn_episode(self, verbose = True):
         log_writer = None
         for trial in range(1000):
             self.__env.reset()
@@ -543,21 +249,7 @@ class Trainer:
                 if (step % int(1.0 / self.__env.dt) == 0) or fin_all:
                     dst_path = dst_png_dir.joinpath("{}.png".format(out_cnt))
                     if not dst_path.exists():
-                        if 0:
-                            pcpt_h = 128
-                            pcpt_w = 128
-                            img = ImageOps.flip(make_state_img(agents, self.__env.map_h, self.__env.map_w, pcpt_h, pcpt_w))
-                            img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, self.__env.map_h, self.__env.map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.occupy] + 1.0) / 2)).astype(jnp.uint8)))
-                            img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, self.__env.map_h, self.__env.map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.vy    ] + 1.5) / 3)).astype(jnp.uint8)))
-                            img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, self.__env.map_h, self.__env.map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.vx    ] + 1.5) / 3)).astype(jnp.uint8)))
-
-                            if not dst_path.parent.exists():
-                                dst_path.parent.mkdir(parents = True)
-                            dr = ImageDraw.Draw(img)
-                            dr.text((0,0), "{}".format(step * self.__env.dt), fill = WHITE)
-                            if not dst_path.parent.exists():
-                                dst_path.parent.mkdir(parents = True)
-                            img.save(dst_path)
+                        pass
                     out_cnt += 1
             
             # after episode
@@ -602,7 +294,7 @@ class Trainer:
 
 def main():
     seed = 1
-    trainer = Trainer(seed)
+    trainer = Trainer()
     trainer.learn_episode()
 
 if __name__ == "__main__":
