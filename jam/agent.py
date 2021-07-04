@@ -132,6 +132,7 @@ class ObjectBase:
     # update motion status
     def step_evolve(self, accel, omega, y_min, y_max, x_min, x_max, fin):
         new_theta = self.calc_new_theta(omega)
+        assert(not jnp.isnan(new_theta))
         new_y = self.calc_new_y(accel, omega)
         new_x = self.calc_new_x(accel, omega)
         new_v = self.calc_new_v(accel)

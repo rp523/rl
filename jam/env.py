@@ -212,7 +212,7 @@ class SharedNetwork:
         self.__opt_init = {}
         SharedNetwork.__opt_update = {}
         SharedNetwork.__get_params = {}
-        SharedNetwork.__opt_states = {}
+        SharedNetwork.opt_states = {}
         for k, nn, input_shape, output_num, _rng in [
             ("se", SharedNetwork.state_encoder, SharedNetwork.__state_shape, feature_num, rng1),
             ("ae", SharedNetwork.action_encoder, action_shape, feature_num, rng2),
@@ -222,7 +222,7 @@ class SharedNetwork:
             init_fun, SharedNetwork.__apply_fun[k] = nn(output_num)
             self.__opt_init[k], SharedNetwork.__opt_update[k], SharedNetwork.__get_params[k] = sgd(lr)
             _, init_params = init_fun(_rng, input_shape)
-            SharedNetwork.__opt_states[k] = self.__opt_init[k](init_params)
+            SharedNetwork.opt_states[k] = self.__opt_init[k](init_params)
         
         if init_weight_path is not None:
             if Path(init_weight_path).exists():
@@ -235,7 +235,7 @@ class SharedNetwork:
             params[k] = SharedNetwork.__get_params[k](opt_state)
         return params
     @staticmethod
-    def __apply_Pi(params, state):
+    def apply_Pi(params, state):
         if state.ndim != len(SharedNetwork.__state_shape):
             state = state.reshape(tuple([1] + list(state.shape)))
         se_params = params["se"]
@@ -248,24 +248,24 @@ class SharedNetwork:
         o_ls = nn_out[EnAction.omega * EnDist.num + EnDist.log_sigma]
         return a_m, a_ls, o_m, o_ls
     def decide_action(self, state):
-        a_m, a_ls, o_m, o_ls = self.__apply_Pi(SharedNetwork.get_params(self.__opt_states), state)
+        a_m, a_ls, o_m, o_ls = SharedNetwork.apply_Pi(SharedNetwork.get_params(SharedNetwork.opt_states), state)
         self.__rng, rng_a, rng_o = jrandom.split(self.__rng, 3)
         accel = a_m + jnp.exp(a_ls) * jrandom.normal(rng_a)
         omega = o_m + jnp.exp(o_ls) * jrandom.normal(rng_o)
         action = (accel, omega)
         return action
     @staticmethod
-    def __log_Pi(params, state, action):
+    def log_Pi(params, state, action):
         a = action[:, EnAction.accel]
         o = action[:, EnAction.omega]
 
-        a_m, a_lsig, o_m, o_lsig = SharedNetwork.__apply_Pi(params, state)
+        a_m, a_lsig, o_m, o_lsig = SharedNetwork.apply_Pi(params, state)
         a_sig = jnp.exp(a_lsig)
         o_sig = jnp.exp(o_lsig)
         log_pi = - ((a - a_m) ** 2) / (2 * (a_sig ** 2)) - ((o - o_m) ** 2) / (2 * (o_sig ** 2)) - 2.0 * 0.5 * jnp.log(2 * jnp.pi) - a_lsig - o_lsig
         return log_pi
     @staticmethod
-    def __apply_Q(params, state, action):
+    def apply_Q(params, state, action):
         se_params = params["se"]
         se_feature = SharedNetwork.__apply_fun["se"](se_params, state)
         ae_params = params["ae"]
@@ -283,12 +283,12 @@ class SharedNetwork:
         for k in self.__opt_states.keys():
             self.__opt_states[k] = self.__opt_init[k](params[k])
     @staticmethod
-    def __J_q(params, s, a, r, n_s, n_a, gamma):
-        next_V = SharedNetwork.__apply_Q(params, n_s, n_a) - SharedNetwork.__log_Pi(params, n_s, n_a)
-        return 0.5 * (SharedNetwork.__apply_Q(params, s, a) - (r + gamma * next_V)) ** 2
+    def J_q(params, s, a, r, n_s, n_a, gamma):
+        next_V = SharedNetwork.apply_Q(params, n_s, n_a) - SharedNetwork.log_Pi(params, n_s, n_a)
+        return 0.5 * (SharedNetwork.apply_Q(params, s, a) - (r + gamma * next_V)) ** 2
     @staticmethod
-    def __J_pi(params, s, a):
-        return SharedNetwork.__log_Pi(params, s, a) - SharedNetwork.__apply_Q(params, s, a)
+    def J_pi(params, s, a):
+        return SharedNetwork.log_Pi(params, s, a) - SharedNetwork.apply_Q(params, s, a)
     @staticmethod
     def __loss(param_se, param_ae, param_pd, param_vd, s, a, r, n_s, n_a, gamma):
         params = {  "se" : param_se,
@@ -296,7 +296,9 @@ class SharedNetwork:
                     "pd" : param_pd,
                     "vd" : param_vd,
                     }
-        return jnp.mean(SharedNetwork.__J_q(params, s, a, r, n_s, n_a, gamma) + SharedNetwork.__J_pi(params, s, a))
+        j_q = SharedNetwork.J_q(params, s, a, r, n_s, n_a, gamma)
+        j_pi = SharedNetwork.J_pi(params, s, a)
+        return jnp.mean(j_q + j_pi)
     @staticmethod
     @jax.jit
     def __update(_idx, opt_states, s, a, r, n_s, n_a, gamma):
@@ -316,7 +318,7 @@ class SharedNetwork:
             loss_val += loss_val1
         return _idx + 1, opt_states, loss_val
     def update(self, gamma, s, a, r, n_s, n_a):
-        self.__learn_cnt, self.__opt_states, loss_val = SharedNetwork.__update(self.__learn_cnt, self.__opt_states, s, a, r, n_s, n_a, gamma)
+        self.__learn_cnt, self.__opt_states, loss_val = SharedNetwork.__update(self.__learn_cnt, SharedNetwork.opt_states, s, a, r, n_s, n_a, gamma)
         return self.__learn_cnt, loss_val
 
     @staticmethod
@@ -490,7 +492,7 @@ class Trainer:
         map_w = 10.0
         pcpt_h = 32
         pcpt_w = 32
-        max_t = 100.0
+        max_t = 2.0
         dt = 0.5
         n_ped_max = 4
         half_decay_dt = 10.0
@@ -570,7 +572,7 @@ class Trainer:
             val = 0
             total_loss = []
             self.__rng, rng = jrandom.split(self.__rng)
-            for i in jrandom.choice(rng, jnp.arange(len(self.__env.experiences)), (len(self.__env.experiences) * 10,)):
+            for i in jrandom.choice(rng, jnp.arange(len(self.__env.experiences)), (len(self.__env.experiences) * 1000,)):
                 e = self.__env.experiences[i]
                 if not e.finished:
                     s[val] = e.state
@@ -585,9 +587,14 @@ class Trainer:
                             f.write("{},{},{},{}\n".format(trial, learn_cnt, total_reward_mean, loss_val))
                         if verbose:
                             print("{},{},{},{}".format(trial, learn_cnt, total_reward_mean, loss_val))
+                            print(  SharedNetwork.J_pi(   SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean(),
+                                    SharedNetwork.J_q(    SharedNetwork.get_params(SharedNetwork.opt_states), s, a, r, n_s, n_a, gamma).mean(),
+                                    SharedNetwork.log_Pi( SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean(),
+                                    SharedNetwork.apply_Q(SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean(),
+                                    )
                         total_loss.append(loss_val)
                         val = 0
-            print("episode={},total_reward_mean={:.3f},loss_mean={:.3f}".format(trial, total_reward_mean, onp.array(total_loss).mean()))
+            print("episode={},learn_cnt={},total_reward_mean={:.3f},loss_mean={:.3f}".format(trial, learn_cnt, total_reward_mean, onp.array(total_loss).mean()))
             weight_path = dst_dir.joinpath("param.bin")
             self.__env.shared_nn.save(weight_path)
             #movie_cmd = "cd \"{}\" && ffmpeg -r 10 -i %d.png -vcodec libx264 -pix_fmt yuv420p \"{}\"".format(dst_png_dir.resolve(), dst_png_dir.parent.joinpath("out.mp4").resolve())
