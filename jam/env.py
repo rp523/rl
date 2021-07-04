@@ -10,7 +10,7 @@ from tqdm import tqdm
 from collections import namedtuple, deque
 import subprocess
 
-from model import SharedNetwork
+from net import SharedNetwork
 from agent import PedestrianAgent
 from delay import DelayGen
 from common import *
