@@ -3,7 +3,7 @@ import numpy as onp
 from common import *
 
 def observe(agents, agent_idx, map_h, map_w, pcpt_h, pcpt_w):
-    state = onp.zeros((pcpt_h, pcpt_w, EnChannel.num), dtype = onp.float32)
+    state = onp.zeros((1, pcpt_h, pcpt_w, EnChannel.num), dtype = onp.float32)
 
     own_obs_y = 0.5 * map_h
     own_obs_x = 0.5 * map_w
@@ -19,9 +19,9 @@ def observe(agents, agent_idx, map_h, map_w, pcpt_h, pcpt_w):
         obs_px1 = int((obs_x + other.radius_m + own_obs_x) / map_w * pcpt_w + 0.5)
         if  (obs_py0 <= pcpt_h - 1) and (0 <= obs_py1) and \
             (obs_px0 <= pcpt_w - 1) and (0 <= obs_px1):
-            state[max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.occupy] = 1.0
-            state[max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.vy    ] = other.v * onp.cos(own.theta - other.theta)
-            state[max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.vx    ] = other.v * onp.sin(own.theta - other.theta)
+            state[0, max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.occupy] = 1.0
+            state[0, max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.vy    ] = other.v * onp.cos(own.theta - other.theta)
+            state[0, max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.vx    ] = other.v * onp.sin(own.theta - other.theta)
 
     rel_y = own.tgt_y - own.y
     rel_x = own.tgt_x - own.x
@@ -32,7 +32,7 @@ def observe(agents, agent_idx, map_h, map_w, pcpt_h, pcpt_w):
     obs_px1 = int((obs_x + own.radius_m + own_obs_x) / map_w * pcpt_w + 0.5)
     if  (obs_py0 <= pcpt_h - 1) and (0 <= obs_py1) and \
         (obs_px0 <= pcpt_w - 1) and (0 <= obs_px1):
-        state[max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.occupy] = - 1.0
+        state[0, max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.occupy] = - 1.0
 
     obs_y = 0.0
     obs_x = 0.0
@@ -42,7 +42,7 @@ def observe(agents, agent_idx, map_h, map_w, pcpt_h, pcpt_w):
     obs_px1 = int((obs_x + own.radius_m + own_obs_x) / map_w * pcpt_w + 0.5)
     if  (obs_py0 <= pcpt_h - 1) and (0 <= obs_py1) and \
         (obs_px0 <= pcpt_w - 1) and (0 <= obs_px1):
-        state[max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.vy    ] = own.v
+        state[0, max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.vy    ] = own.v
     
     return state
 

@@ -3,6 +3,9 @@ from PIL import Image, ImageDraw, ImageOps
 import jax.numpy as jnp
 from common import *
 from observer import observe
+from matplotlib import pyplot as plt
+import pandas as pd
+from pathlib import Path
 
 WHITE  = (255, 255, 255)
 RED    = (255, 40,    0)
@@ -71,3 +74,27 @@ def output_state_png(agents, dst_path, map_h, map_w, step, dt):
     if not dst_path.parent.exists():
         dst_path.parent.mkdir(parents = True)
     img.save(dst_path)
+
+if __name__ == "__main__":
+    csv_path = Path(r"/home/isgsktyktt/work/tmp/loss.csv")
+    df = pd.read_csv(csv_path)
+    plt.clf()
+    x = []
+
+    if 0:
+        y0 = []
+        y1 = []
+        for e in jnp.unique(df["episode"]):
+            x.append(e)
+            y0.append((df["loss_val"][df["episode"] == e]).mean())
+            y1.append((df["total_reward_mean"][df["episode"] == e]).mean())
+    else:
+        x = df["learn_cnt"]
+        y0 = df["loss_val"]
+        y1 = df["total_reward_mean"]
+    markersize = 5
+    plt.plot(x, y0, ".", markersize = markersize, label = "loss")
+    plt.plot(x, y1, ".", markersize = markersize, label = "reward")
+    plt.grid(True)
+    plt.legend()
+    plt.show()

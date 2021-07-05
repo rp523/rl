@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import jax.random as jrandom
 from pathlib import Path
 from tqdm import tqdm
-from collections import namedtuple, deque
+from collections import namedtuple
 import subprocess
 
 from net import SharedNetwork
@@ -40,7 +40,7 @@ class Environment:
         self.__max_t = max_t
         self.__dt = dt
         self.__agents = None
-        self.__experiences = None
+        self.__experiences = []
         self.__gamma = 0.5 ** (1.0 / (half_decay_dt / self.__dt))
         self.__delay_gen = DelayGen(self.__gamma,  0.5)
         self.__approach_gen = DelayGen(self.__gamma, 0.5)
@@ -122,7 +122,7 @@ class Environment:
 
     def reset(self):
         self.__agents = self.__make_init_state()
-        self.__experiences = deque(maxlen = int(self.max_t / self.dt))
+        self.__experiences = []
 
     def __step_evolve(self, agent, action):
         accel, omega = action
@@ -177,7 +177,7 @@ class Environment:
                 next_action = self.__shared_nn.decide_action(next_state)
                 self.__agents[a].reserved_action = next_action
                 state, action, reward, fin = rec[a]
-                experience = Experience(state, action, reward, next_state, next_action, fin)
+                experience = Experience(state, action.flatten(), reward, next_state, next_action.flatten(), fin)
                 self.__experiences.append(experience)
 
             fin_all = True
@@ -262,12 +262,13 @@ class Trainer:
             n_a = onp.zeros((state_shape[0], EnAction.num), dtype = onp.float32)
             gamma = self.__env.gamma
             val = 0
+            learn_cnt = 0
             total_loss = []
             self.__rng, rng = jrandom.split(self.__rng)
-            for i in jrandom.choice(rng, jnp.arange(len(self.__env.experiences)), (len(self.__env.experiences) * 1000,)):
+            for i in jrandom.randint(rng, (len(self.__env.experiences) * 100,), 0, len(self.__env.experiences)):
                 e = self.__env.experiences[i]
                 if not e.finished:
-                    s[val] = e.state
+                    s[val] = e.state[0]
                     a[val] = e.action
                     r[val] = e.reward
                     n_s[val] = e.next_state
@@ -294,7 +295,8 @@ class Trainer:
                             print()
                         total_loss.append(loss_val)
                         val = 0
-            print("episode={},learn_cnt={},total_reward_mean={:.3f},loss_mean={:.3f}".format(trial, learn_cnt, total_reward_mean, onp.array(total_loss).mean()))
+            if learn_cnt > 0:
+                print("episode={},learn_cnt={},total_reward_mean={:.3f},loss_mean={:.3f}".format(trial, learn_cnt, total_reward_mean, onp.array(total_loss).mean()))
             weight_path = dst_dir.joinpath("param.bin")
             self.__env.shared_nn.save(weight_path)
             #movie_cmd = "cd \"{}\" && ffmpeg -r 10 -i %d.png -vcodec libx264 -pix_fmt yuv420p \"{}\"".format(dst_png_dir.resolve(), dst_png_dir.parent.joinpath("out.mp4").resolve())
