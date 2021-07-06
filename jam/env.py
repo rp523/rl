@@ -94,8 +94,8 @@ class Environment:
                 (new_ped.tgt_x >        0.0 + new_ped.radius_m) and \
                 (new_ped.tgt_x < self.map_w - new_ped.radius_m):
                 for old_ped in old_pedestrians:
-                    if  ((new_ped.tgt_y - old_ped.tgt_y) ** 2 + (new_ped.tgt_x - old_ped.tgt_x) ** 2 > (new_ped.radius_m + old_ped.radius_m) ** 2) and \
-                        ((new_ped.y     - old_ped.y    ) ** 2 + (new_ped.x     - old_ped.x    ) ** 2 > (new_ped.radius_m + old_ped.radius_m) ** 2):
+                    if  ((new_ped.tgt_y - old_ped.tgt_y) ** 2 + (new_ped.tgt_x - old_ped.tgt_x) ** 2 > (2 * (new_ped.radius_m + old_ped.radius_m)) ** 2) and \
+                        ((new_ped.y     - old_ped.y    ) ** 2 + (new_ped.x     - old_ped.x    ) ** 2 > (2 * (new_ped.radius_m + old_ped.radius_m)) ** 2):
                         pass
                     else:
                         isolated = False
@@ -203,9 +203,9 @@ class Trainer:
         pcpt_w = 32
         max_t = 100.0
         dt = 0.5
-        n_ped_max = 4
+        n_ped_max = 1
         half_decay_dt = 10.0
-        init_weight_path = None#r"/home/isgsktyktt/work/param.bin"
+        init_weight_path = "/home/isgsktyktt/work/param.bin"
 
         self.__env = Environment(rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
     def learn_episode(self, verbose = True):
@@ -287,10 +287,10 @@ class Trainer:
                         all_info["learn_cnt"] = int(learn_cnt)
                         all_info["total_reward_mean"] = float(total_reward_mean)
                         all_info["loss_val"] = float(loss_val)
-                        all_info["J_pi"] = float(SharedNetwork.J_pi(   SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean())
-                        all_info["J_q"] = float(SharedNetwork.J_q(    SharedNetwork.get_params(SharedNetwork.opt_states), s, a, r, n_s, n_a, gamma).mean())
-                        all_info["log_Pi"] = float(SharedNetwork.log_Pi( SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean())
-                        all_info["Q"] = float(SharedNetwork.apply_Q(SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean())
+                        #all_info["J_pi"] = float(SharedNetwork.J_pi(   SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean())
+                        #all_info["J_q"] = float(SharedNetwork.J_q(    SharedNetwork.get_params(SharedNetwork.opt_states), s, a, r, n_s, n_a, gamma).mean())
+                        #all_info["log_Pi"] = float(SharedNetwork.log_Pi( SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean())
+                        #all_info["Q"] = float(SharedNetwork.apply_Q(SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean())
                         all_log_writer.write(all_info)
                         if verbose:
                             for value in all_info.values():

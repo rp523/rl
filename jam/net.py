@@ -47,6 +47,7 @@ class SharedNetwork:
             params[k] = SharedNetwork.__get_params[k](opt_state)
         return params
     @staticmethod
+    @jax.jit
     def apply_Pi(params, state):
         se_params = params["se"]
         feature = SharedNetwork.__apply_fun["se"](se_params, state)
