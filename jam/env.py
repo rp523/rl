@@ -41,9 +41,10 @@ class Environment:
         self.__dt = dt
         self.__agents = None
         self.__experiences = []
-        self.__gamma = 0.5 ** (1.0 / (half_decay_dt / self.__dt))
-        self.__delay_gen = DelayGen(self.__gamma,  0.5)
-        self.__approach_gen = DelayGen(self.__gamma, 0.5)
+        self.__gamma = 0.5 ** (1.0 / (half_decay_dt / self.dt))
+        self.__r_decay = 0.5 ** (1.0 / (self.max_t / self.dt))
+        self.__delay_reward = DelayGen(decay_rate = self.__r_decay, accum_max = - 0.1)
+        self.__approach_reward = DelayGen(decay_rate = self.__r_decay, accum_max = 0.1)
 
     @property
     def n_ped_max(self):
@@ -122,7 +123,9 @@ class Environment:
 
     def reset(self):
         self.__agents = self.__make_init_state()
-        self.__experiences = []
+        self.__delay_reward.reset()
+        self.__approach_reward.reset()
+        self.__experiences.clear()
 
     def __step_evolve(self, agent, action):
         accel, omega = action
@@ -136,8 +139,9 @@ class Environment:
     def __calc_reward(self, agent_idx):
         reward = 0.0
         own = self.__agents[agent_idx]
-        # delay
-        reward -= self.__delay_gen()
+
+        # delay punishment
+        reward += self.__delay_reward()
         # hit
         other_agents = self.__agents[:agent_idx] + self.__agents[agent_idx + 1:]
         assert(len(other_agents) == len(self.__agents) - 1)
@@ -147,7 +151,7 @@ class Environment:
                 reward += (-1.0)
         # approach
         approach_rate = (jnp.sqrt((own.tgt_y - own.init_y) ** 2 + (own.tgt_x - own.init_x) ** 2) - jnp.sqrt((own.y - own.tgt_y) ** 2 + (own.x - own.tgt_x) ** 2)) / jnp.sqrt(self.__map_h ** 2 + self.__map_w ** 2)
-        reward += self.__approach_gen() * approach_rate
+        reward += self.__approach_reward() * approach_rate
         # reach
         if own.reached_goal():
             reward += 1.0
@@ -179,6 +183,8 @@ class Environment:
                 state, action, reward, fin = rec[a]
                 experience = Experience(state, action.flatten(), reward, next_state, next_action.flatten(), fin)
                 self.__experiences.append(experience)
+            self.__delay_reward.step()
+            self.__approach_reward.step()
 
             fin_all = True
             for a in range(len(self.__agents)):
@@ -201,13 +207,14 @@ class Trainer:
         dt = 0.5
         n_ped_max = 4
         half_decay_dt = 10.0
-        init_weight_path = None
+        init_weight_path = None#r"/home/isgsktyktt/work/tmp/param0.bin"
 
         self.__env = Environment(rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
     def learn_episode(self, verbose = True):
         dst_base_dir = Path("tmp")
         log_writer = None
         all_log_writer = LogWriter(dst_base_dir.joinpath("loss.csv"))
+        total_log = False
         for trial in range(1000):
             self.__env.reset()
 
@@ -233,15 +240,15 @@ class Trainer:
                 out_infos["t"] = step * self.__env.dt
                 for agent_idx, agent in enumerate(agents):
                     experience = self.__env.experiences[-len(agents) + agent_idx]
-                    out_infos["tgt_y{}".format(agent_idx)] = agent.tgt_y
-                    out_infos["tgt_x{}".format(agent_idx)] = agent.tgt_x
-                    out_infos["y{}".format(agent_idx)] = agent.y
-                    out_infos["x{}".format(agent_idx)] = agent.x
-                    out_infos["v{}".format(agent_idx)] = agent.v
-                    out_infos["theta{}".format(agent_idx)] = agent.theta
-                    out_infos["accel{}".format(agent_idx)] = experience.action[0]
-                    out_infos["omega{}".format(agent_idx)] = experience.action[1]
-                    out_infos["reward{}".format(agent_idx)] = experience.reward
+                    out_infos["tgt_y{}".format(agent_idx)] = float(agent.tgt_y)
+                    out_infos["tgt_x{}".format(agent_idx)] = float(agent.tgt_x)
+                    out_infos["y{}".format(agent_idx)] = float(agent.y)
+                    out_infos["x{}".format(agent_idx)] = float(agent.x)
+                    out_infos["v{}".format(agent_idx)] = float(agent.v)
+                    out_infos["theta{}".format(agent_idx)] = float(agent.theta)
+                    out_infos["accel{}".format(agent_idx)] = float(experience.action[0])
+                    out_infos["omega{}".format(agent_idx)] = float(experience.action[1])
+                    out_infos["reward{}".format(agent_idx)] = float(experience.reward)
                     out_infos["finished{}".format(agent_idx)] = experience.finished
                     total_reward[agent_idx] += experience.reward
                 log_writer.write(out_infos)
@@ -265,7 +272,7 @@ class Trainer:
             learn_cnt = 0
             total_loss = []
             self.__rng, rng = jrandom.split(self.__rng)
-            for i in jrandom.randint(rng, (len(self.__env.experiences) * 100,), 0, len(self.__env.experiences)):
+            for i in jrandom.randint(rng, (int(self.__env.max_t / self.__env.dt),), 0, len(self.__env.experiences)):
                 e = self.__env.experiences[i]
                 if not e.finished:
                     s[val] = e.state[0]
@@ -296,7 +303,18 @@ class Trainer:
                         total_loss.append(loss_val)
                         val = 0
             if learn_cnt > 0:
-                print("episode={},learn_cnt={},total_reward_mean={:.3f},loss_mean={:.3f}".format(trial, learn_cnt, total_reward_mean, onp.array(total_loss).mean()))
+                #print("episode={},learn_cnt={},total_reward_mean={:.3f},loss_mean={:.3f}".format(trial, learn_cnt, total_reward_mean, onp.array(total_loss).mean()))
+                pass
+            with open(dst_base_dir.joinpath("total.csv"), "a") as f:
+                if total_log is False:
+                    total_log = True
+                    f.write("episode,reward,loss\n")
+                f.write(str(trial))
+                f.write(",")
+                f.write(str(float(total_reward_mean)))
+                f.write(",")
+                f.write(str(onp.array(total_loss).mean()))
+                f.write("\n")
             weight_path = dst_dir.joinpath("param.bin")
             self.__env.shared_nn.save(weight_path)
             #movie_cmd = "cd \"{}\" && ffmpeg -r 10 -i %d.png -vcodec libx264 -pix_fmt yuv420p \"{}\"".format(dst_png_dir.resolve(), dst_png_dir.parent.joinpath("out.mp4").resolve())
