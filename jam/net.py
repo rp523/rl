@@ -27,18 +27,18 @@ class SharedNetwork:
         SharedNetwork.opt_states = {}
         for k, nn, input_shape, output_num, _rng, lr in [
             ("se", SharedNetwork.state_encoder, SharedNetwork.__state_shape, feature_num, rng1, 1E-4),
-            ("ae", SharedNetwork.action_encoder, action_shape, feature_num, rng2, 1E-5),
+            ("ae", SharedNetwork.action_encoder, action_shape, feature_num, rng2, 1E-4),
             ("pd", SharedNetwork.policy_decoder, feature_shape, EnAction.num * EnDist.num, rng3, 1E-4),
-            ("vd", SharedNetwork.value_decoder, feature_shape, (1,), rng4, 1E-5),
+            ("vd", SharedNetwork.value_decoder, feature_shape, (1,), rng4, 1E-4),
             ]:
             init_fun, SharedNetwork.__apply_fun[k] = nn(output_num)
-            self.__opt_init[k], SharedNetwork.__opt_update[k], SharedNetwork.__get_params[k] = sgd(lr)
+            self.__opt_init[k], SharedNetwork.__opt_update[k], SharedNetwork.__get_params[k] = adam(lr)
             _, init_params = init_fun(_rng, input_shape)
             SharedNetwork.opt_states[k] = self.__opt_init[k](init_params)
         
         if init_weight_path is not None:
-            if Path(init_weight_path).exists():
-                self.__load(init_weight_path)
+            assert(Path(init_weight_path).exists())
+            self.__load(init_weight_path)
         self.__learn_cnt = 0
     @staticmethod
     def get_params(_opt_states):

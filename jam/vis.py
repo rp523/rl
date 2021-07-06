@@ -1,6 +1,6 @@
 #coding: utf-8
 from PIL import Image, ImageDraw, ImageOps
-import jax.numpy as jnp
+import numpy as onp
 from common import *
 from observer import observe
 from matplotlib import pyplot as plt
@@ -19,7 +19,7 @@ PURPLE = (154,   0, 121)
 BROWN  = (102,  51,   0)
 def make_state_img(agents, map_h, map_w, pcpt_h, pcpt_w):
     cols = (WHITE, RED, YELLOW, GREEN, BLUE, SKY, PINK, ORANGE, PURPLE, BROWN)
-    img = Image.fromarray(onp.array(jnp.zeros((pcpt_h, pcpt_w, 3), dtype = jnp.uint8)))
+    img = Image.fromarray(onp.array(onp.zeros((pcpt_h, pcpt_w, 3), dtype = onp.uint8)))
     dr = ImageDraw.Draw(img)
     for a, agent in enumerate(agents):
         y = agent.y / map_h * pcpt_h
@@ -27,22 +27,22 @@ def make_state_img(agents, map_h, map_w, pcpt_h, pcpt_w):
         ry = agent.radius_m / map_h * pcpt_h 
         rx = agent.radius_m / map_w * pcpt_w
         
-        py0 = jnp.clip(int(y + 0.5), 0, pcpt_h - 1)
-        px0 = jnp.clip(int(x + 0.5), 0, pcpt_w - 1)
-        py1 = jnp.clip(int((y + ry * onp.sin(agent.theta)) + 0.5), 0, pcpt_h - 1)
-        px1 = jnp.clip(int((x + rx * onp.cos(agent.theta)) + 0.5), 0, pcpt_w - 1)
+        py0 = onp.clip(int(y + 0.5), 0, pcpt_h - 1)
+        px0 = onp.clip(int(x + 0.5), 0, pcpt_w - 1)
+        py1 = onp.clip(int((y + ry * onp.sin(agent.theta)) + 0.5), 0, pcpt_h - 1)
+        px1 = onp.clip(int((x + rx * onp.cos(agent.theta)) + 0.5), 0, pcpt_w - 1)
         dr.line((px0, py0, px1, py1), fill = cols[a], width = 1)
         
-        py0 = jnp.clip(int((y - ry) + 0.5), 0, pcpt_h - 1)
-        py1 = jnp.clip(int((y + ry) + 0.5), 0, pcpt_h - 1)
-        px0 = jnp.clip(int((x - rx) + 0.5), 0, pcpt_w - 1)
-        px1 = jnp.clip(int((x + rx) + 0.5), 0, pcpt_w - 1)
+        py0 = onp.clip(int((y - ry) + 0.5), 0, pcpt_h - 1)
+        py1 = onp.clip(int((y + ry) + 0.5), 0, pcpt_h - 1)
+        px0 = onp.clip(int((x - rx) + 0.5), 0, pcpt_w - 1)
+        px1 = onp.clip(int((x + rx) + 0.5), 0, pcpt_w - 1)
         dr.ellipse((px0, py0, px1, py1), outline = cols[a], width = 1)
 
         tgt_y = agent.tgt_y / map_h * pcpt_h 
         tgt_x = agent.tgt_x / map_w * pcpt_w
-        tgt_py = jnp.clip(int(tgt_y + 0.5), 0, pcpt_h)
-        tgt_px = jnp.clip(int(tgt_x + 0.5), 0, pcpt_w)
+        tgt_py = onp.clip(int(tgt_y + 0.5), 0, pcpt_h)
+        tgt_px = onp.clip(int(tgt_x + 0.5), 0, pcpt_w)
         lin_siz = 5
         dr.line((tgt_px - lin_siz, tgt_py - lin_siz, tgt_px + lin_siz, tgt_py + lin_siz), width = 1, fill = cols[a])
         dr.line((tgt_px - lin_siz, tgt_py + lin_siz, tgt_px + lin_siz, tgt_py - lin_siz), width = 1, fill = cols[a])
@@ -63,9 +63,9 @@ def output_state_png(agents, dst_path, map_h, map_w, step, dt):
     pcpt_h = 128
     pcpt_w = 128
     img = ImageOps.flip(make_state_img(agents, map_h, map_w, pcpt_h, pcpt_w))
-    img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, map_h, map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.occupy] + 1.0) / 2)).astype(jnp.uint8)))
-    img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, map_h, map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.vy    ] + 1.5) / 3)).astype(jnp.uint8)))
-    img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, map_h, map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.vx    ] + 1.5) / 3)).astype(jnp.uint8)))
+    img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, map_h, map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.occupy] + 1.0) / 2)).astype(onp.uint8)))
+    img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, map_h, map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.vy    ] + 1.5) / 3)).astype(onp.uint8)))
+    img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, map_h, map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.vx    ] + 1.5) / 3)).astype(onp.uint8)))
 
     if not dst_path.parent.exists():
         dst_path.parent.mkdir(parents = True)
@@ -75,26 +75,48 @@ def output_state_png(agents, dst_path, map_h, map_w, step, dt):
         dst_path.parent.mkdir(parents = True)
     img.save(dst_path)
 
-if __name__ == "__main__":
-    csv_path = Path(r"/home/isgsktyktt/work/tmp/loss.csv")
-    df = pd.read_csv(csv_path)
-    plt.clf()
-    x = []
+def main():
 
-    if 0:
-        y0 = []
-        y1 = []
-        for e in jnp.unique(df["episode"]):
-            x.append(e)
-            y0.append((df["loss_val"][df["episode"] == e]).mean())
-            y1.append((df["total_reward_mean"][df["episode"] == e]).mean())
-    else:
+    import time
+    draw_cnt = 0
+    while 1:
+        csv_dir_path = Path(r"/home/isgsktyktt/work/tmp")
+        csv_path = csv_dir_path.joinpath("learn.csv")
+        if not csv_path.exists():
+            return
+
+        df = pd.read_csv(csv_path)
+
+        plt.clf()
+        fig, axs = plt.subplots(1, 2)
+
+        x = []
+        r = []
+        trials = onp.unique(df["trial"])
+        for t in trials:
+            episodes = onp.unique(df["episode"][df["trial"] == t])
+            for e in episodes:
+                tgt_idx = onp.logical_and(df["trial"] == t, df["episode"] == e)
+                reward = df["total_reward_mean"][tgt_idx].mean()
+                x.append(len(x))
+                r.append(reward)
+        markersize = 5
+        axs[0].plot(x, r, ".", markersize = markersize, label = "reward")
+        axs[0].grid(True)
+        axs[0].set_title("Episode Reward")
+
         x = df["learn_cnt"]
-        y0 = df["loss_val"]
-        y1 = df["total_reward_mean"]
-    markersize = 5
-    plt.plot(x, y0, ".", markersize = markersize, label = "loss")
-    plt.plot(x, y1, ".", markersize = markersize, label = "reward")
-    plt.grid(True)
-    plt.legend()
-    plt.show()
+        l = df["loss_val"]
+        markersize = 5
+        axs[1].plot(x, l, ".", markersize = markersize, label = "loss")
+        axs[1].grid(True)
+        axs[1].set_title("Learning Loss")
+
+        if draw_cnt != l.size:
+            draw_cnt = l.size
+            #plt.show()
+            plt.savefig(r"/home/isgsktyktt/work/now.png")
+
+        time.sleep(20)
+if __name__ == "__main__":
+    main()

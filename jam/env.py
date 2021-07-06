@@ -41,10 +41,7 @@ class Environment:
         self.__dt = dt
         self.__agents = None
         self.__experiences = []
-        self.__gamma = 0.5 ** (1.0 / (half_decay_dt / self.dt))
-        self.__r_decay = 0.5 ** (1.0 / (self.max_t / self.dt))
-        self.__delay_reward = DelayGen(decay_rate = self.__r_decay, accum_max = - 0.1)
-        self.__approach_reward = DelayGen(decay_rate = self.__r_decay, accum_max = 0.1)
+        self.__gamma = 1.0#0.5 ** (1.0 / (half_decay_dt / self.dt))
 
     @property
     def n_ped_max(self):
@@ -123,8 +120,8 @@ class Environment:
 
     def reset(self):
         self.__agents = self.__make_init_state()
-        self.__delay_reward.reset()
-        self.__approach_reward.reset()
+
+    def clear_experience(self):
         self.__experiences.clear()
 
     def __step_evolve(self, agent, action):
@@ -138,10 +135,11 @@ class Environment:
     
     def __calc_reward(self, agent_idx):
         reward = 0.0
+        max_step = int(self.max_t / self.dt)
         own = self.__agents[agent_idx]
 
         # delay punishment
-        reward += self.__delay_reward()
+        reward += (- 0.1) / max_step#self.__delay_reward()
         # hit
         other_agents = self.__agents[:agent_idx] + self.__agents[agent_idx + 1:]
         assert(len(other_agents) == len(self.__agents) - 1)
@@ -150,8 +148,10 @@ class Environment:
             if own.hit_with(other_agent):
                 reward += (-1.0)
         # approach
-        approach_rate = (jnp.sqrt((own.tgt_y - own.init_y) ** 2 + (own.tgt_x - own.init_x) ** 2) - jnp.sqrt((own.y - own.tgt_y) ** 2 + (own.x - own.tgt_x) ** 2)) / jnp.sqrt(self.__map_h ** 2 + self.__map_w ** 2)
-        reward += self.__approach_reward() * approach_rate
+        remain_distance = jnp.sqrt((own.y - own.tgt_y) ** 2 + (own.x - own.tgt_x) ** 2)
+        max_distance = jnp.sqrt(self.__map_h ** 2 + self.__map_w ** 2)
+        approach_rate = (0.5 * max_distance - remain_distance) / max_distance
+        reward += (+ 0.1) * approach_rate / max_step
         # reach
         if own.reached_goal():
             reward += 1.0
@@ -183,8 +183,6 @@ class Environment:
                 state, action, reward, fin = rec[a]
                 experience = Experience(state, action.flatten(), reward, next_state, next_action.flatten(), fin)
                 self.__experiences.append(experience)
-            self.__delay_reward.step()
-            self.__approach_reward.step()
 
             fin_all = True
             for a in range(len(self.__agents)):
@@ -207,85 +205,86 @@ class Trainer:
         dt = 0.5
         n_ped_max = 4
         half_decay_dt = 10.0
-        init_weight_path = None#r"/home/isgsktyktt/work/tmp/param0.bin"
+        init_weight_path = None#r"/home/isgsktyktt/work/param.bin"
 
         self.__env = Environment(rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
     def learn_episode(self, verbose = True):
+        episode_unit_num = 100
+        episode_num_per_unit = 1
         dst_base_dir = Path("tmp")
         log_writer = None
-        all_log_writer = LogWriter(dst_base_dir.joinpath("loss.csv"))
+        all_log_writer = LogWriter(dst_base_dir.joinpath("learn.csv"))
         total_log = False
-        for trial in range(1000):
-            self.__env.reset()
-
-            dst_dir = dst_base_dir.joinpath("trial{}".format(trial))
-            if not dst_dir.exists():
-                dst_dir.mkdir(parents = True)
-            dst_png_dir = dst_dir.joinpath("png")
-            log_path = dst_base_dir.joinpath("log{}.csv".format(trial))
-            if log_writer is not None:
-                del log_writer
-            log_writer = LogWriter(log_path)
-        
-            out_cnt = 0
-            total_reward_mean = 0.0
-            total_reward = [0.0] * len(self.__env.get_agents())
-            if verbose:
-                loop_fun = tqdm
-            else:
-                loop_fun = lambda x : x
-            for step, (fin_all, agents) in loop_fun(enumerate(self.__env.evolve())):
-                out_infos = {}
-                out_infos["step"] = step
-                out_infos["t"] = step * self.__env.dt
-                for agent_idx, agent in enumerate(agents):
-                    experience = self.__env.experiences[-len(agents) + agent_idx]
-                    out_infos["tgt_y{}".format(agent_idx)] = float(agent.tgt_y)
-                    out_infos["tgt_x{}".format(agent_idx)] = float(agent.tgt_x)
-                    out_infos["y{}".format(agent_idx)] = float(agent.y)
-                    out_infos["x{}".format(agent_idx)] = float(agent.x)
-                    out_infos["v{}".format(agent_idx)] = float(agent.v)
-                    out_infos["theta{}".format(agent_idx)] = float(agent.theta)
-                    out_infos["accel{}".format(agent_idx)] = float(experience.action[0])
-                    out_infos["omega{}".format(agent_idx)] = float(experience.action[1])
-                    out_infos["reward{}".format(agent_idx)] = float(experience.reward)
-                    out_infos["finished{}".format(agent_idx)] = experience.finished
-                    total_reward[agent_idx] += experience.reward
-                log_writer.write(out_infos)
-                
-                if (step % int(1.0 / self.__env.dt) == 0) or fin_all:
-                    dst_path = dst_png_dir.joinpath("{}.png".format(out_cnt))
-                    if not dst_path.exists():
-                        pass
-                    out_cnt += 1
+        for trial in range(episode_unit_num):
+            total_rewards = []
+            for episode in range(episode_num_per_unit):
+                log_path = dst_base_dir.joinpath("play", "{}_{}.csv".format(trial, episode))
+                if log_writer is not None:
+                    del log_writer
+                log_writer = LogWriter(log_path)
+                self.__env.reset()
             
-            # after episode
-            total_reward_mean = onp.array(total_reward).mean()
+                total_reward = [0.0] * len(self.__env.get_agents())
+                if verbose:
+                    loop_fun = tqdm
+                else:
+                    loop_fun = lambda x : x
+                for step, (fin_all, agents) in loop_fun(enumerate(self.__env.evolve())):
+                    out_infos = {}
+                    out_infos["episode"] = episode
+                    out_infos["step"] = step
+                    out_infos["t"] = step * self.__env.dt
+                    for agent_idx, agent in enumerate(agents):
+                        experience = self.__env.experiences[-len(agents) + agent_idx]
+                        out_infos["tgt_y{}".format(agent_idx)] = float(agent.tgt_y)
+                        out_infos["tgt_x{}".format(agent_idx)] = float(agent.tgt_x)
+                        out_infos["y{}".format(agent_idx)] = float(agent.y)
+                        out_infos["x{}".format(agent_idx)] = float(agent.x)
+                        out_infos["v{}".format(agent_idx)] = float(agent.v)
+                        out_infos["theta{}".format(agent_idx)] = float(agent.theta)
+                        out_infos["accel{}".format(agent_idx)] = float(experience.action[0])
+                        out_infos["omega{}".format(agent_idx)] = float(experience.action[1])
+                        out_infos["finished{}".format(agent_idx)] = experience.finished
+                        total_reward[agent_idx] += experience.reward
+                        out_infos["reward{}".format(agent_idx)] = float(experience.reward)
+                        out_infos["total_reward{}".format(agent_idx)] = float(total_reward[agent_idx])
+                    log_writer.write(out_infos)
+                    
+                # after episode
+                for t in total_reward:
+                    total_rewards.append(float(t))
+
+            # after episode unit
+            total_reward_mean = float(jnp.array(total_rewards).mean())
             state_shape = self.__env.state_shape
-            s = onp.zeros(state_shape, dtype = onp.float32)
-            a = onp.zeros((state_shape[0], EnAction.num), dtype = onp.float32)
-            r = onp.zeros((state_shape[0], ), dtype = onp.float32)
-            n_s = onp.zeros(state_shape, dtype = onp.float32)
-            n_a = onp.zeros((state_shape[0], EnAction.num), dtype = onp.float32)
+            s = jnp.zeros(state_shape, dtype = jnp.float32)
+            a = jnp.zeros((state_shape[0], EnAction.num), dtype = jnp.float32)
+            r = jnp.zeros((state_shape[0], 1), dtype = jnp.float32)
+            n_s = jnp.zeros(state_shape, dtype = jnp.float32)
+            n_a = jnp.zeros((state_shape[0], EnAction.num), dtype = jnp.float32)
             gamma = self.__env.gamma
             val = 0
             learn_cnt = 0
             total_loss = []
             self.__rng, rng = jrandom.split(self.__rng)
-            for i in jrandom.randint(rng, (int(self.__env.max_t / self.__env.dt),), 0, len(self.__env.experiences)):
+            max_step = int(self.__env.max_t / self.__env.dt)
+            for i in jrandom.randint(rng, (max_step * episode_num_per_unit,), 0, len(self.__env.experiences)):
+            #for i in jrandom.randint(rng, (int(self.__env.max_t / self.__env.dt) * 100,), 0, len(self.__env.experiences)):
                 e = self.__env.experiences[i]
                 if not e.finished:
-                    s[val] = e.state[0]
-                    a[val] = e.action
-                    r[val] = e.reward
-                    n_s[val] = e.next_state
-                    n_a[val] = e.next_action
+                    s.at[val,:].set(e.state[0])
+                    a.at[val,:].set(e.action)
+                    r.at[val].set(e.reward.flatten())
+                    n_s.at[val,:].set(e.next_state[0])
+                    n_a.at[val,:].set(e.next_action)
                     val += 1
                     if val >= state_shape[0]:
                         learn_cnt, loss_val = self.__env.shared_nn.update(gamma, s, a, r, n_s, n_a)
                         all_info = {}
-                        all_info["episode"] = trial
-                        all_info["learn_cnt"] = learn_cnt
+                        all_info["trial"] = int(trial)
+                        all_info["episode_num_per_unit"] = int(episode_num_per_unit)
+                        all_info["episode"] = int(episode)
+                        all_info["learn_cnt"] = int(learn_cnt)
                         all_info["total_reward_mean"] = float(total_reward_mean)
                         all_info["loss_val"] = float(loss_val)
                         all_info["J_pi"] = float(SharedNetwork.J_pi(   SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean())
@@ -302,23 +301,14 @@ class Trainer:
                             print()
                         total_loss.append(loss_val)
                         val = 0
-            if learn_cnt > 0:
-                #print("episode={},learn_cnt={},total_reward_mean={:.3f},loss_mean={:.3f}".format(trial, learn_cnt, total_reward_mean, onp.array(total_loss).mean()))
-                pass
-            with open(dst_base_dir.joinpath("total.csv"), "a") as f:
-                if total_log is False:
-                    total_log = True
-                    f.write("episode,reward,loss\n")
-                f.write(str(trial))
-                f.write(",")
-                f.write(str(float(total_reward_mean)))
-                f.write(",")
-                f.write(str(onp.array(total_loss).mean()))
-                f.write("\n")
-            weight_path = dst_dir.joinpath("param.bin")
+            weight_path = dst_base_dir.joinpath("weight", "param{}.bin".format(trial))
+            if not weight_path.parent.exists():
+                weight_path.parent.mkdir(parents = True)
             self.__env.shared_nn.save(weight_path)
-            #movie_cmd = "cd \"{}\" && ffmpeg -r 10 -i %d.png -vcodec libx264 -pix_fmt yuv420p \"{}\"".format(dst_png_dir.resolve(), dst_png_dir.parent.joinpath("out.mp4").resolve())
-            #subprocess.run(movie_cmd)
+
+            self.__env.clear_experience()
+            episode_num_per_unit = min(episode_num_per_unit + 1, state_shape[0])
+            
 
 def main():
     seed = 1
