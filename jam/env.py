@@ -205,7 +205,7 @@ class Trainer:
         dt = 0.5
         n_ped_max = 1
         half_decay_dt = 10.0
-        init_weight_path = "/home/isgsktyktt/work/param.bin"
+        init_weight_path = None#"/home/isgsktyktt/work/param.bin"
 
         self.__env = Environment(rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
     def learn_episode(self, verbose = True):
@@ -272,11 +272,11 @@ class Trainer:
             #for i in jrandom.randint(rng, (int(self.__env.max_t / self.__env.dt) * 100,), 0, len(self.__env.experiences)):
                 e = self.__env.experiences[i]
                 if not e.finished:
-                    s.at[val,:].set(e.state[0])
-                    a.at[val,:].set(e.action)
-                    r.at[val].set(e.reward.flatten())
-                    n_s.at[val,:].set(e.next_state[0])
-                    n_a.at[val,:].set(e.next_action)
+                    s = s.at[val,:].set(e.state[0])
+                    a = a.at[val,:].set(e.action)
+                    r = r.at[val].set(e.reward.flatten())
+                    n_s = n_s.at[val,:].set(e.next_state[0])
+                    n_a = n_a.at[val,:].set(e.next_action)
                     val += 1
                     if val >= state_shape[0]:
                         learn_cnt, loss_val = self.__env.shared_nn.update(gamma, s, a, r, n_s, n_a)
