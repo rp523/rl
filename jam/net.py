@@ -12,10 +12,11 @@ sys.path.append("/home/isgsktyktt/work/jax")
 from model.maker.model_maker import net_maker
 
 class SharedNetwork:
-    def __init__(self, rng, init_weight_path, batch_size, pcpt_h, pcpt_w):
+    def __init__(self, cfg, rng, init_weight_path, batch_size, pcpt_h, pcpt_w):
         self.__rng, rng1, rng2, rng3, rng4, rng5 = jrandom.split(rng, 6)
 
         feature_num = 128
+        SharedNetwork.__temperature = cfg.temperature
         SharedNetwork.__state_shape = (batch_size, pcpt_h, pcpt_w, EnChannel.num)
         action_shape = (batch_size, EnAction.num)
         feature_shape = (batch_size, feature_num)
@@ -26,10 +27,10 @@ class SharedNetwork:
         SharedNetwork.__get_params = {}
         SharedNetwork.opt_states = {}
         for k, nn, input_shape, output_num, _rng, lr in [
-            ("se", SharedNetwork.state_encoder, SharedNetwork.__state_shape, feature_num, rng1, 1E-4),
-            ("ae", SharedNetwork.action_encoder, action_shape, feature_num, rng2, 1E-4),
-            ("pd", SharedNetwork.policy_decoder, feature_shape, EnAction.num * EnDist.num, rng3, 1E-4),
-            ("vd", SharedNetwork.value_decoder, feature_shape, (1,), rng4, 1E-4),
+            ("se", SharedNetwork.state_encoder, SharedNetwork.__state_shape, feature_num, rng1, 1E-3),
+            ("ae", SharedNetwork.action_encoder, action_shape, feature_num, rng2, 1E-3),
+            ("pd", SharedNetwork.policy_decoder, feature_shape, EnAction.num * EnDist.num, rng3, 1E-3),
+            ("vd", SharedNetwork.value_decoder, feature_shape, (1,), rng4, 1E-3),
             ]:
             init_fun, SharedNetwork.__apply_fun[k] = nn(output_num)
             self.__opt_init[k], SharedNetwork.__opt_update[k], SharedNetwork.__get_params[k] = adam(lr)
@@ -75,7 +76,7 @@ class SharedNetwork:
         a_sig = jnp.exp(a_lsig)
         o_sig = jnp.exp(o_lsig)
         log_pi = - ((a - a_m) ** 2) / (2 * (a_sig ** 2)) - ((o - o_m) ** 2) / (2 * (o_sig ** 2)) - 2.0 * 0.5 * jnp.log(2 * jnp.pi) - a_lsig - o_lsig
-        return log_pi.reshape((state.shape[0], 1))
+        return (SharedNetwork.__temperature * log_pi).reshape((state.shape[0], 1))
     @staticmethod
     def apply_Q(params, state, action):
         se_params = params["se"]
@@ -108,34 +109,45 @@ class SharedNetwork:
     def J_pi(params, s, a):
         return SharedNetwork.log_Pi(params, s, a) - SharedNetwork.apply_Q(params, s, a)
     @staticmethod
-    def __loss(param, s, a, r, n_s, n_a, gamma):
-        param_se, param_ae, param_pd, param_vd = param
+    def __pi_loss(param_list, s, a, r, n_s, n_a, gamma):
         params = {}
         for i, k in enumerate(["se", "ae", "pd", "vd"]):
-            params[k] = param[i]
-        j_q = SharedNetwork.J_q(params, s, a, r, n_s, n_a, gamma)
+            params[k] = param_list[i]
         j_pi = SharedNetwork.J_pi(params, s, a)
-        loss = jnp.mean(j_q + j_pi)
-        for param in params.values():
-            loss += 1E-5 * net_maker.weight_decay(param)
+        loss = jnp.mean(j_pi)
+        #for param in params.values():
+        #    loss += 1E-5 * net_maker.weight_decay(param)
+        return loss
+    @staticmethod
+    def __q_loss(param_list, s, a, r, n_s, n_a, gamma):
+        params = {}
+        for i, k in enumerate(["se", "ae", "pd", "vd"]):
+            params[k] = param_list[i]
+        j_q = SharedNetwork.J_q(params, s, a, r, n_s, n_a, gamma)
+        loss = jnp.mean(j_q)
+        #for param in params.values():
+        #    loss += 1E-5 * net_maker.weight_decay(param)
         return loss
     @staticmethod
     @jax.jit
     def __update(_idx, _opt_states, s, a, r, n_s, n_a, gamma):
         params = SharedNetwork.get_params(_opt_states)
-        param = []
+        param_list = []
         for k in ["se", "ae", "pd", "vd"]:
-            param.append(params[k])
+            param_list.append(params[k])
         
-        loss_val = 0.0
-        loss_val1, grad_val = jax.value_and_grad(SharedNetwork.__loss)(param, s, a, r, n_s, n_a, gamma)
+        loss_val_q, grad_val = jax.value_and_grad(SharedNetwork.__q_loss)(param_list, s, a, r, n_s, n_a, gamma)
         for i, k in enumerate(SharedNetwork.__opt_update.keys()):
             _opt_states[k] = SharedNetwork.__opt_update[k](_idx, grad_val[i], _opt_states[k])
-            loss_val += loss_val1
-        return _idx + 1, _opt_states, loss_val
+
+        loss_val_pi, grad_val = jax.value_and_grad(SharedNetwork.__pi_loss)(param_list, s, a, r, n_s, n_a, gamma)
+        for i, k in enumerate(SharedNetwork.__opt_update.keys()):
+            _opt_states[k] = SharedNetwork.__opt_update[k](_idx, grad_val[i], _opt_states[k])
+
+        return _idx + 1, _opt_states, loss_val_q, loss_val_pi
     def update(self, gamma, s, a, r, n_s, n_a):
-        self.__learn_cnt, SharedNetwork.opt_states, loss_val = SharedNetwork.__update(self.__learn_cnt, SharedNetwork.opt_states, s, a, r, n_s, n_a, gamma)
-        return self.__learn_cnt, loss_val
+        self.__learn_cnt, SharedNetwork.opt_states, loss_val_q, loss_val_pi = SharedNetwork.__update(self.__learn_cnt, SharedNetwork.opt_states, s, a, r, n_s, n_a, gamma)
+        return self.__learn_cnt, loss_val_q, loss_val_pi
 
     @staticmethod
     def state_encoder(output_num):

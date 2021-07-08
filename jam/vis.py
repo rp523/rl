@@ -79,16 +79,15 @@ def main():
 
     import time
     draw_cnt = 0
-    while 1:
-        csv_dir_path = Path(r"/home/isgsktyktt/work/tmp")
+    plt.clf()
+    fig, axs = plt.subplots(2,3)
+    for ee in range(1):
+        csv_dir_path = Path(r"/home/isgsktyktt/work/outputs/2021-07-08/10-12-45/tmp")
         csv_path = csv_dir_path.joinpath("learn.csv")
-        if not csv_path.exists():
-            return
+        assert(csv_path.exists())
 
         df = pd.read_csv(csv_path)
 
-        plt.clf()
-        fig, axs = plt.subplots(1, 2)
 
         x = []
         r = []
@@ -101,22 +100,30 @@ def main():
                 x.append(len(x))
                 r.append(reward)
         markersize = 5
-        axs[0].plot(x, r, ".", markersize = markersize, label = "reward")
-        axs[0].grid(True)
-        axs[0].set_title("Episode Reward")
+        axs[ee,0].plot(x, r, ".", markersize = markersize, label = "reward")
+        axs[ee,0].grid(True)
+        axs[ee,0].set_title("Episode Reward")
 
         x = df["learn_cnt"]
-        l = df["loss_val"]
+        l = df["loss_val_q"]
         markersize = 5
-        axs[1].plot(x, l, ".", markersize = markersize, label = "loss")
-        axs[1].grid(True)
-        axs[1].set_title("Learning Loss")
-
+        axs[ee,1].plot(x, l, ".", markersize = markersize, label = "loss")
+        axs[ee,1].grid(True)
+        axs[ee,1].set_title("Q Loss{}".format(ee))
         if draw_cnt != l.size:
             draw_cnt = l.size
             #plt.show()
-            plt.savefig(r"/home/isgsktyktt/work/now.png")
-
-        time.sleep(20)
+            #plt.savefig(r"/home/isgsktyktt/work/now.png")
+        x = df["learn_cnt"]
+        l = df["loss_val_pi"]
+        markersize = 5
+        axs[ee,2].plot(x, l, ".", markersize = markersize, label = "loss")
+        axs[ee,2].grid(True)
+        axs[ee,2].set_title("Pi Loss{}".format(ee))
+        if draw_cnt != l.size:
+            draw_cnt = l.size
+            #plt.show()
+            #plt.savefig(r"/home/isgsktyktt/work/now.png")
+    plt.show()
 if __name__ == "__main__":
     main()

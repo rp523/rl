@@ -9,6 +9,7 @@ from pathlib import Path
 from tqdm import tqdm
 from collections import namedtuple
 import subprocess
+import hydra
 
 from net import SharedNetwork
 from agent import PedestrianAgent
@@ -29,11 +30,11 @@ Experience = namedtuple("Experience",
                         )
 
 class Environment:
-    def __init__(self, rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max):
+    def __init__(self, cfg, rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max):
         self.__rng, rng = jrandom.split(rng)
         self.__batch_size = batch_size
         self.__state_shape = (self.__batch_size, pcpt_h, pcpt_w, EnChannel.num)
-        self.__shared_nn = SharedNetwork(rng, init_weight_path, self.__batch_size, pcpt_h, pcpt_w)
+        self.__shared_nn = SharedNetwork(cfg.nn, rng, init_weight_path, self.__batch_size, pcpt_h, pcpt_w)
         self.__n_ped_max = n_ped_max
         self.__map_h = map_h
         self.__map_w = map_w
@@ -193,7 +194,8 @@ class Environment:
                 break
             
 class Trainer:
-    def __init__(self, seed = 0):
+    def __init__(self, cfg, seed):
+        self.__cfg = cfg
         rng = jrandom.PRNGKey(seed)
         self.__rng, rng = jrandom.split(rng)
         batch_size = 128
@@ -207,10 +209,10 @@ class Trainer:
         half_decay_dt = 10.0
         init_weight_path = None#"/home/isgsktyktt/work/param.bin"
 
-        self.__env = Environment(rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
+        self.__env = Environment(cfg, rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
     def learn_episode(self, verbose = True):
         episode_unit_num = 100
-        episode_num_per_unit = 1
+        episode_num_per_unit = 8
         dst_base_dir = Path("tmp")
         log_writer = None
         all_log_writer = LogWriter(dst_base_dir.joinpath("learn.csv"))
@@ -265,10 +267,11 @@ class Trainer:
             gamma = self.__env.gamma
             val = 0
             learn_cnt = 0
-            total_loss = []
+            total_loss_q = []
+            total_loss_pi = []
             self.__rng, rng = jrandom.split(self.__rng)
             max_step = int(self.__env.max_t / self.__env.dt)
-            for i in jrandom.randint(rng, (max_step * episode_num_per_unit,), 0, len(self.__env.experiences)):
+            for i in jrandom.randint(rng, (len(self.__env.experiences),), 0, len(self.__env.experiences)):
             #for i in jrandom.randint(rng, (int(self.__env.max_t / self.__env.dt) * 100,), 0, len(self.__env.experiences)):
                 e = self.__env.experiences[i]
                 if not e.finished:
@@ -279,14 +282,16 @@ class Trainer:
                     n_a = n_a.at[val,:].set(e.next_action)
                     val += 1
                     if val >= state_shape[0]:
-                        learn_cnt, loss_val = self.__env.shared_nn.update(gamma, s, a, r, n_s, n_a)
+                        learn_cnt, loss_val_q, loss_val_pi = self.__env.shared_nn.update(gamma, s, a, r, n_s, n_a)
                         all_info = {}
                         all_info["trial"] = int(trial)
                         all_info["episode_num_per_unit"] = int(episode_num_per_unit)
                         all_info["episode"] = int(episode)
                         all_info["learn_cnt"] = int(learn_cnt)
+                        all_info["temperature"] = float(self.__cfg.nn.temperature)
                         all_info["total_reward_mean"] = float(total_reward_mean)
-                        all_info["loss_val"] = float(loss_val)
+                        all_info["loss_val_q"] = float(loss_val_q)
+                        all_info["loss_val_pi"] = float(loss_val_pi)
                         #all_info["J_pi"] = float(SharedNetwork.J_pi(   SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean())
                         #all_info["J_q"] = float(SharedNetwork.J_q(    SharedNetwork.get_params(SharedNetwork.opt_states), s, a, r, n_s, n_a, gamma).mean())
                         #all_info["log_Pi"] = float(SharedNetwork.log_Pi( SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean())
@@ -299,7 +304,8 @@ class Trainer:
                                 else:
                                     print(value, end = ",")
                             print()
-                        total_loss.append(loss_val)
+                        total_loss_q.append(loss_val_q)
+                        total_loss_pi.append(loss_val_pi)
                         val = 0
             weight_path = dst_base_dir.joinpath("weight", "param{}.bin".format(trial))
             if not weight_path.parent.exists():
@@ -307,12 +313,12 @@ class Trainer:
             self.__env.shared_nn.save(weight_path)
 
             self.__env.clear_experience()
-            episode_num_per_unit = min(episode_num_per_unit + 1, state_shape[0])
+            #episode_num_per_unit = min(episode_num_per_unit + 1, state_shape[0])
             
-
-def main():
-    seed = 1
-    trainer = Trainer()
+@hydra.main(config_path = ".", config_name = "main.yaml")
+def main(cfg):
+    seed = 0
+    trainer = Trainer(cfg, seed)
     trainer.learn_episode()
 
 if __name__ == "__main__":
