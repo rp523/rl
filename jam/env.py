@@ -212,8 +212,8 @@ class Trainer:
         self.__env = Environment(cfg, rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
     def learn_episode(self, verbose = True):
         episode_unit_num = 100
-        episode_num_per_unit = 8
-        dst_base_dir = Path("tmp")
+        episode_num_per_unit = 1
+        dst_base_dir = Path("/home/isgsktyktt/work/tmp")
         log_writer = None
         all_log_writer = LogWriter(dst_base_dir.joinpath("learn.csv"))
         total_log = False
@@ -282,7 +282,7 @@ class Trainer:
                     n_a = n_a.at[val,:].set(e.next_action)
                     val += 1
                     if val >= state_shape[0]:
-                        learn_cnt, loss_val_q, loss_val_pi = self.__env.shared_nn.update(gamma, s, a, r, n_s, n_a)
+                        learn_cnt, loss_val_q, loss_val_pi, loss_balances = self.__env.shared_nn.update(gamma, s, a, r, n_s, n_a)
                         all_info = {}
                         all_info["trial"] = int(trial)
                         all_info["episode_num_per_unit"] = int(episode_num_per_unit)
@@ -292,6 +292,8 @@ class Trainer:
                         all_info["total_reward_mean"] = float(total_reward_mean)
                         all_info["loss_val_q"] = float(loss_val_q)
                         all_info["loss_val_pi"] = float(loss_val_pi)
+                        for _i, loss_balance in enumerate(loss_balances):
+                            all_info["loss_balance{}".format(_i)] = float(loss_balance)
                         #all_info["J_pi"] = float(SharedNetwork.J_pi(   SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean())
                         #all_info["J_q"] = float(SharedNetwork.J_q(    SharedNetwork.get_params(SharedNetwork.opt_states), s, a, r, n_s, n_a, gamma).mean())
                         #all_info["log_Pi"] = float(SharedNetwork.log_Pi( SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean())
@@ -300,7 +302,7 @@ class Trainer:
                         if verbose:
                             for value in all_info.values():
                                 if isinstance(value, float):
-                                    print("{:.3f}".format(value), end = ",")
+                                    print("{}".format(value), end = ",")
                                 else:
                                     print(value, end = ",")
                             print()
@@ -313,7 +315,7 @@ class Trainer:
             self.__env.shared_nn.save(weight_path)
 
             self.__env.clear_experience()
-            #episode_num_per_unit = min(episode_num_per_unit + 1, state_shape[0])
+            episode_num_per_unit = min(episode_num_per_unit + 1, state_shape[0])
             
 @hydra.main(config_path = ".", config_name = "main.yaml")
 def main(cfg):

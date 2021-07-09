@@ -41,6 +41,11 @@ class SharedNetwork:
             assert(Path(init_weight_path).exists())
             self.__load(init_weight_path)
         self.__learn_cnt = 0
+    
+        SharedNetwork.__loss_num = 2
+        SharedNetwork.__loss_balance = jnp.zeros((SharedNetwork.__loss_num,), dtype = jnp.float32)
+        SharedNetwork.__loss_diffs = jnp.zeros((SharedNetwork.__loss_num,), dtype = jnp.float32)
+
     @staticmethod
     def get_params(_opt_states):
         params = {}
@@ -129,25 +134,48 @@ class SharedNetwork:
         #    loss += 1E-5 * net_maker.weight_decay(param)
         return loss
     @staticmethod
+    def __balance_loss(params, loss_diffs):
+        pos_loss_diffs = jnp.clip(loss_diffs, 0.0, loss_diffs)
+        loss = (jax.nn.softmax(params) * pos_loss_diffs).mean()
+        return loss
+    @staticmethod
     @jax.jit
-    def __update(_idx, _opt_states, s, a, r, n_s, n_a, gamma):
+    def __update(_idx, _opt_states, loss_balance, s, a, r, n_s, n_a, gamma):
         params = SharedNetwork.get_params(_opt_states)
+        keys = list(SharedNetwork.__opt_update.keys())
         param_list = []
         for k in ["se", "ae", "pd", "vd"]:
             param_list.append(params[k])
         
         loss_val_q, grad_val = jax.value_and_grad(SharedNetwork.__q_loss)(param_list, s, a, r, n_s, n_a, gamma)
-        for i, k in enumerate(SharedNetwork.__opt_update.keys()):
+        grad_val = net_maker.recursive_scaling(grad_val, loss_balance[0])
+        for k in ["se", "ae", "vd"]:
+            i = keys.index(k)
             _opt_states[k] = SharedNetwork.__opt_update[k](_idx, grad_val[i], _opt_states[k])
 
         loss_val_pi, grad_val = jax.value_and_grad(SharedNetwork.__pi_loss)(param_list, s, a, r, n_s, n_a, gamma)
-        for i, k in enumerate(SharedNetwork.__opt_update.keys()):
+        grad_val = net_maker.recursive_scaling(grad_val, loss_balance[1])
+        for k in ["se", "pd"]:
+            i = keys.index(k)
             _opt_states[k] = SharedNetwork.__opt_update[k](_idx, grad_val[i], _opt_states[k])
-
+        
         return _idx + 1, _opt_states, loss_val_q, loss_val_pi
     def update(self, gamma, s, a, r, n_s, n_a):
-        self.__learn_cnt, SharedNetwork.opt_states, loss_val_q, loss_val_pi = SharedNetwork.__update(self.__learn_cnt, SharedNetwork.opt_states, s, a, r, n_s, n_a, gamma)
-        return self.__learn_cnt, loss_val_q, loss_val_pi
+        if self.__learn_cnt >= 2:
+            grad_val = jax.jit(jax.grad(SharedNetwork.__balance_loss))(SharedNetwork.__loss_balance, SharedNetwork.__loss_diffs)
+            SharedNetwork.__loss_balance = SharedNetwork.__loss_balance - 0.1 * grad_val
+        loss_balance = jax.nn.softmax(SharedNetwork.__loss_balance)
+
+        self.__learn_cnt, SharedNetwork.opt_states, loss_val_q, loss_val_pi = SharedNetwork.__update(self.__learn_cnt, SharedNetwork.opt_states, loss_balance, s, a, r, n_s, n_a, gamma)
+
+        if self.__learn_cnt == 1:
+            SharedNetwork.__loss_diffs = SharedNetwork.__loss_diffs.at[0].set(loss_val_q)
+            SharedNetwork.__loss_diffs = SharedNetwork.__loss_diffs.at[1].set(loss_val_pi)
+        else:
+            SharedNetwork.__loss_diffs = SharedNetwork.__loss_diffs.at[0].set(loss_val_q  - SharedNetwork.__loss_diffs[0])
+            SharedNetwork.__loss_diffs = SharedNetwork.__loss_diffs.at[1].set(loss_val_pi - SharedNetwork.__loss_diffs[1])
+        
+        return self.__learn_cnt, loss_val_q, loss_val_pi, loss_balance
 
     @staticmethod
     def state_encoder(output_num):
