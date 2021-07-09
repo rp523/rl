@@ -211,8 +211,8 @@ class Trainer:
 
         self.__env = Environment(cfg, rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
     def learn_episode(self, verbose = True):
-        episode_unit_num = 100
-        episode_num_per_unit = 1
+        episode_unit_num = 10000
+        episode_num_per_unit = 8
         dst_base_dir = Path("/home/isgsktyktt/work/tmp")
         log_writer = None
         all_log_writer = LogWriter(dst_base_dir.joinpath("learn.csv"))
@@ -266,7 +266,6 @@ class Trainer:
             n_a = jnp.zeros((state_shape[0], EnAction.num), dtype = jnp.float32)
             gamma = self.__env.gamma
             val = 0
-            learn_cnt = 0
             total_loss_q = []
             total_loss_pi = []
             self.__rng, rng = jrandom.split(self.__rng)
@@ -282,12 +281,13 @@ class Trainer:
                     n_a = n_a.at[val,:].set(e.next_action)
                     val += 1
                     if val >= state_shape[0]:
-                        learn_cnt, loss_val_q, loss_val_pi, loss_balances = self.__env.shared_nn.update(gamma, s, a, r, n_s, n_a)
+                        q_learn_cnt, p_learn_cnt, loss_val_q, loss_val_pi, loss_balances = self.__env.shared_nn.update(gamma, s, a, r, n_s, n_a)
                         all_info = {}
                         all_info["trial"] = int(trial)
                         all_info["episode_num_per_unit"] = int(episode_num_per_unit)
                         all_info["episode"] = int(episode)
-                        all_info["learn_cnt"] = int(learn_cnt)
+                        all_info["q_learn_cnt"] = int(q_learn_cnt)
+                        all_info["p_learn_cnt"] = int(p_learn_cnt)
                         all_info["temperature"] = float(self.__cfg.nn.temperature)
                         all_info["total_reward_mean"] = float(total_reward_mean)
                         all_info["loss_val_q"] = float(loss_val_q)
@@ -315,7 +315,7 @@ class Trainer:
             self.__env.shared_nn.save(weight_path)
 
             self.__env.clear_experience()
-            episode_num_per_unit = min(episode_num_per_unit + 1, state_shape[0])
+            #episode_num_per_unit = min(episode_num_per_unit + 1, state_shape[0])
             
 @hydra.main(config_path = ".", config_name = "main.yaml")
 def main(cfg):
