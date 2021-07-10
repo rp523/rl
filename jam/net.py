@@ -181,7 +181,7 @@ class SharedNetwork:
         #if self.__q_learn_cnt >= 2:
         #    grad_val = jax.jit(jax.grad(SharedNetwork.__balance_loss))(SharedNetwork.__loss_balance, SharedNetwork.__loss_diffs)
         #    SharedNetwork.__loss_balance = SharedNetwork.__loss_balance - 0.1 * grad_val
-        #loss_balance = jax.nn.softmax(SharedNetwork.__loss_balance)
+        loss_balance = jax.nn.softmax(SharedNetwork.__loss_balance)
 
         rng, self.__rng = jrandom.split(self.__rng)
         self.__q_learn_cnt, self.__p_learn_cnt, self.opt_states, loss_val_q, loss_val_pi = SharedNetwork.__update(self.__q_learn_cnt, self.__p_learn_cnt, self.__opt_states, loss_balance, s, a, r, n_s, gamma, rng)
