@@ -25,9 +25,9 @@ class SharedNetwork:
         self.__opt_init = {}
         SharedNetwork.__opt_update = {}
         SharedNetwork.__get_params = {}
-        SharedNetwork.opt_states = {}
+        self.__opt_states = {}
         q_lr = 1E-4
-        p_lr = 1E-5
+        p_lr = 1E-3
         for k, nn, input_shape, output_num, _rng, lr in [
             ("q_se", SharedNetwork.state_encoder, SharedNetwork.__state_shape, feature_num, rng1, q_lr),
             ("q_ae", SharedNetwork.action_encoder, action_shape, feature_num, rng2, q_lr),
@@ -38,7 +38,7 @@ class SharedNetwork:
             init_fun, SharedNetwork.__apply_fun[k] = nn(output_num)
             self.__opt_init[k], SharedNetwork.__opt_update[k], SharedNetwork.__get_params[k] = adam(lr)
             _, init_params = init_fun(_rng, input_shape)
-            SharedNetwork.opt_states[k] = self.__opt_init[k](init_params)
+            self.__opt_states[k] = self.__opt_init[k](init_params)
         
         if init_weight_path is not None:
             assert(Path(init_weight_path).exists())
@@ -49,11 +49,10 @@ class SharedNetwork:
         SharedNetwork.__loss_num = 2
         SharedNetwork.__loss_balance = jnp.zeros((SharedNetwork.__loss_num,), dtype = jnp.float32)
         SharedNetwork.__loss_diffs = jnp.zeros((SharedNetwork.__loss_num,), dtype = jnp.float32)
-
     @staticmethod
-    def get_params(_opt_states):
+    def get_params(opt_states):
         params = {}
-        for k, opt_state in _opt_states.items():
+        for k, opt_state in opt_states.items():
             params[k] = SharedNetwork.__get_params[k](opt_state)
         return params
     @staticmethod
@@ -64,36 +63,39 @@ class SharedNetwork:
         pd_params = params["p_pd"]
         nn_out = SharedNetwork.__apply_fun["p_pd"](pd_params, feature)
         assert(nn_out.shape == (state.shape[0], EnAction.num * EnDist.num))
-        a_m =  nn_out[:,EnAction.accel * EnDist.num + EnDist.mean]
-        a_ls = nn_out[:,EnAction.accel * EnDist.num + EnDist.log_sigma]
-        o_m =  nn_out[:,EnAction.omega * EnDist.num + EnDist.mean]
-        o_ls = nn_out[:,EnAction.omega * EnDist.num + EnDist.log_sigma]
-        return a_m, a_ls, o_m, o_ls
+        a_mean =  nn_out[:,EnAction.accel * EnDist.num + EnDist.mean]
+        a_lsig = nn_out[:,EnAction.accel * EnDist.num + EnDist.log_sigma]
+        o_mean =  nn_out[:,EnAction.omega * EnDist.num + EnDist.mean]
+        o_lsig = nn_out[:,EnAction.omega * EnDist.num + EnDist.log_sigma]
+        return a_mean, a_lsig, o_mean, o_lsig
     def decide_action(self, state):
+        params = SharedNetwork.get_params(self.__opt_states)
+        self.__rng, rng = jrandom.split(self.__rng)
+        action, log_pi = SharedNetwork.__action_and_log_Pi(params, state, rng)
+        return action
+    @staticmethod
+    def __action_and_log_Pi(params, state, rng):
+        # action
         batch_size = state.shape[0]
-        a_m, a_ls, o_m, o_ls = SharedNetwork.apply_Pi(SharedNetwork.get_params(SharedNetwork.opt_states), state)
-        assert(a_m.shape == (batch_size,))
-        assert(a_ls.shape == (batch_size,))
-        assert(o_m.shape == (batch_size,))
-        assert(o_ls.shape == (batch_size,))
-        self.__rng, rng_a, rng_o = jrandom.split(self.__rng, 3)
-        accel = a_m + jnp.exp(a_ls) * jrandom.normal(rng_a, shape = (batch_size,))
-        omega = o_m + jnp.exp(o_ls) * jrandom.normal(rng_o, shape = (batch_size,))
+        a_mean, a_lsig, o_mean, o_lsig = SharedNetwork.apply_Pi(params, state)
+        assert(a_mean.shape == (batch_size,))
+        assert(a_lsig.shape == (batch_size,))
+        assert(o_mean.shape == (batch_size,))
+        assert(o_lsig.shape == (batch_size,))
+        rng_a, rng_o = jrandom.split(rng)
+        accel = a_mean + jnp.exp(a_lsig) * jrandom.normal(rng_a, shape = (batch_size,))
+        omega = o_mean + jnp.exp(o_lsig) * jrandom.normal(rng_o, shape = (batch_size,))
         assert(accel.shape == (batch_size,))
         assert(omega.shape == (batch_size,))
         action = jnp.append(accel.reshape(batch_size, 1), omega.reshape(batch_size, 1), axis = -1)
         assert(action.shape == (batch_size, EnAction.num))
-        return action
-    @staticmethod
-    def log_Pi(params, state, action):
-        a = action[:, EnAction.accel]
-        o = action[:, EnAction.omega]
 
-        a_m, a_lsig, o_m, o_lsig = SharedNetwork.apply_Pi(params, state)
         a_sig = jnp.exp(a_lsig)
         o_sig = jnp.exp(o_lsig)
-        log_pi = - ((a - a_m) ** 2) / (2 * (a_sig ** 2)) - ((o - o_m) ** 2) / (2 * (o_sig ** 2)) - 2.0 * 0.5 * jnp.log(2 * jnp.pi) - a_lsig - o_lsig
-        return (SharedNetwork.__temperature * log_pi).reshape((state.shape[0], 1))
+        log_pi = - ((accel - a_mean) ** 2) / (2 * (a_sig ** 2)) - ((omega - o_mean) ** 2) / (2 * (o_sig ** 2)) - 2.0 * 0.5 * jnp.log(2 * jnp.pi) - a_lsig - o_lsig
+        log_pi = (SharedNetwork.__temperature * log_pi).reshape((batch_size, 1))
+
+        return action, log_pi
     @staticmethod
     def apply_Q(params, state, action):
         se_params = params["q_se"]
@@ -105,17 +107,18 @@ class SharedNetwork:
         assert(nn_out.shape == (state.shape[0], 1))
         return nn_out
     def save(self, weight_path):
-        params = SharedNetwork.get_params(SharedNetwork.opt_states)
+        params = SharedNetwork.get_params(self.__opt_states)
         with open(weight_path, 'wb') as f:
             pickle.dump(params, f)
     def __load(self, weight_path):
         with open(weight_path, 'rb') as f:
             params = pickle.load(f)
-        for k in SharedNetwork.opt_states.keys():
+        for k in self.__opt_states.keys():
             SharedNetwork.opt_states[k] = self.__opt_init[k](params[k])
     @staticmethod
-    def J_q(params, s, a, r, n_s, n_a, gamma):
-        next_V = SharedNetwork.apply_Q(params, n_s, n_a) - SharedNetwork.log_Pi(params, n_s, n_a)
+    def J_q(params, s, a, r, n_s, gamma, rng):
+        n_a, log_pi = SharedNetwork.__action_and_log_Pi(params, n_s, rng)
+        next_V = SharedNetwork.apply_Q(params, n_s, n_a) - log_pi
         assert(next_V.size == s.shape[0])
         r = r.reshape((-1 ,1))
         td = SharedNetwork.apply_Q(params, s, a) - (r + gamma * next_V)
@@ -123,24 +126,25 @@ class SharedNetwork:
         assert(out.size == s.shape[0])
         return out
     @staticmethod
-    def J_pi(params, s, a):
-        return SharedNetwork.log_Pi(params, s, a) - SharedNetwork.apply_Q(params, s, a)
+    def J_pi(params, state, rng):
+        action, log_pi = SharedNetwork.__action_and_log_Pi(params, state, rng)
+        return log_pi - SharedNetwork.apply_Q(params, state, action)
     @staticmethod
-    def __pi_loss(param_list, s, a, r, n_s, n_a, gamma):
+    def __pi_loss(param_list, s, rng):
         params = {}
         for i, k in enumerate(["q_se", "q_ae", "q_vd", "p_se", "p_pd"]):
             params[k] = param_list[i]
-        j_pi = SharedNetwork.J_pi(params, s, a)
+        j_pi = SharedNetwork.J_pi(params, s, rng)
         loss = jnp.mean(j_pi)
         for param in params.values():
             loss += 1E-5 * net_maker.weight_decay(param)
         return loss
     @staticmethod
-    def __q_loss(param_list, s, a, r, n_s, n_a, gamma):
+    def __q_loss(param_list, s, a, r, n_s, gamma, rng):
         params = {}
         for i, k in enumerate(["q_se", "q_ae", "q_vd", "p_se", "p_pd"]):
             params[k] = param_list[i]
-        j_q = SharedNetwork.J_q(params, s, a, r, n_s, n_a, gamma)
+        j_q = SharedNetwork.J_q(params, s, a, r, n_s, gamma, rng)
         loss = jnp.mean(j_q)
         for param in params.values():
             loss += 1E-5 * net_maker.weight_decay(param)
@@ -152,33 +156,35 @@ class SharedNetwork:
         return loss
     @staticmethod
     @jax.jit
-    def __update(q_idx, p_idx, _opt_states, loss_balance, s, a, r, n_s, n_a, gamma):
+    def __update(q_idx, p_idx, _opt_states, loss_balance, s, a, r, n_s, gamma, rng):
+        rng_q, rng_p = jrandom.split(rng)
         params = SharedNetwork.get_params(_opt_states)
         keys = list(SharedNetwork.__opt_update.keys())
         param_list = []
         for k in ["q_se", "q_ae", "q_vd", "p_se", "p_pd"]:
             param_list.append(params[k])
         
-        loss_val_q, grad_val = jax.value_and_grad(SharedNetwork.__q_loss)(param_list, s, a, r, n_s, n_a, gamma)
+        loss_val_q, grad_val = jax.value_and_grad(SharedNetwork.__q_loss)(param_list, s, a, r, n_s, gamma, rng_q)
         grad_val = net_maker.recursive_scaling(grad_val, loss_balance[0])
         for k in ["q_se", "q_ae", "q_vd"]:
             i = keys.index(k)
             _opt_states[k] = SharedNetwork.__opt_update[k](q_idx, grad_val[i], _opt_states[k])
 
-        loss_val_pi, grad_val = jax.value_and_grad(SharedNetwork.__pi_loss)(param_list, s, a, r, n_s, n_a, gamma)
+        loss_val_pi, grad_val = jax.value_and_grad(SharedNetwork.__pi_loss)(param_list, s, rng_p)
         grad_val = net_maker.recursive_scaling(grad_val, loss_balance[1])
         for k in ["p_se", "p_pd"]:
             i = keys.index(k)
             _opt_states[k] = SharedNetwork.__opt_update[k](p_idx, grad_val[i], _opt_states[k])
         
         return q_idx + 1, p_idx + 1, _opt_states, loss_val_q, loss_val_pi
-    def update(self, gamma, s, a, r, n_s, n_a):
+    def update(self, gamma, s, a, r, n_s):
         #if self.__q_learn_cnt >= 2:
         #    grad_val = jax.jit(jax.grad(SharedNetwork.__balance_loss))(SharedNetwork.__loss_balance, SharedNetwork.__loss_diffs)
         #    SharedNetwork.__loss_balance = SharedNetwork.__loss_balance - 0.1 * grad_val
-        loss_balance = jax.nn.softmax(SharedNetwork.__loss_balance)
+        #loss_balance = jax.nn.softmax(SharedNetwork.__loss_balance)
 
-        self.__q_learn_cnt, self.__p_learn_cnt, SharedNetwork.opt_states, loss_val_q, loss_val_pi = SharedNetwork.__update(self.__q_learn_cnt, self.__p_learn_cnt, SharedNetwork.opt_states, loss_balance, s, a, r, n_s, n_a, gamma)
+        rng, self.__rng = jrandom.split(self.__rng)
+        self.__q_learn_cnt, self.__p_learn_cnt, self.opt_states, loss_val_q, loss_val_pi = SharedNetwork.__update(self.__q_learn_cnt, self.__p_learn_cnt, self.__opt_states, loss_balance, s, a, r, n_s, gamma, rng)
 
         if self.__q_learn_cnt == 1:
             SharedNetwork.__loss_diffs = SharedNetwork.__loss_diffs.at[0].set(loss_val_q)

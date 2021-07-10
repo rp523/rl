@@ -158,7 +158,6 @@ class PedestrianAgent(Pedestrian):
         self.__tgt_y = tgt_y
         self.__tgt_x = tgt_x
         self.__radius_m = 0.5
-        self.reserved_action = None
     # getter
     @property
     def tgt_y(self):

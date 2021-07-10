@@ -24,7 +24,6 @@ Experience = namedtuple("Experience",
                             "action",
                             "reward",
                             "next_state",
-                            "next_action",
                             "finished"
                         ]
                         )
@@ -165,10 +164,8 @@ class Environment:
                 fin = self.__agents[a].reached_goal()
                 state = observe(self.__agents, a, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
 
-                action = self.__agents[a].reserved_action
-                if action is None:
-                    action = self.__shared_nn.decide_action(state)
-                    action = action.flatten()   # single agent size
+                action = self.__shared_nn.decide_action(state)
+                action = action.flatten()   # single agent size
 
                 if not fin:
                     self.__agents[a] = self.__step_evolve(self.__agents[a], action)
@@ -180,12 +177,12 @@ class Environment:
                 rec.append((state, action, reward, fin))
             for a in range(len(self.__agents)):
                 next_state = observe(self.__agents, a, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
-                next_action = self.__shared_nn.decide_action(next_state)
-                next_action = next_action.flatten()   # single agent size
+                #next_action = self.__shared_nn.decide_action(next_state)
+                #next_action = next_action.flatten()   # single agent size
 
-                self.__agents[a].reserved_action = next_action
+                #self.__agents[a].reserved_action = next_action
                 state, action, reward, fin = rec[a]
-                experience = Experience(state, action.flatten(), reward, next_state, next_action.flatten(), fin)
+                experience = Experience(state, action.flatten(), reward, next_state, fin)
                 self.__experiences.append(experience)
 
             fin_all = True
@@ -214,8 +211,8 @@ class Trainer:
 
         self.__env = Environment(cfg, rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
     def learn_episode(self, verbose = True):
-        episode_unit_num = 50000
-        episode_num_per_unit = 1
+        episode_unit_num = 10000
+        episode_num_per_unit = 8
         dst_base_dir = Path("/home/isgsktyktt/work/tmp")
         log_writer = None
         all_log_writer = LogWriter(dst_base_dir.joinpath("learn.csv"))
@@ -265,7 +262,6 @@ class Trainer:
             a = jnp.zeros((state_shape[0], EnAction.num), dtype = jnp.float32)
             r = jnp.zeros((state_shape[0], 1), dtype = jnp.float32)
             n_s = jnp.zeros(state_shape, dtype = jnp.float32)
-            n_a = jnp.zeros((state_shape[0], EnAction.num), dtype = jnp.float32)
             gamma = self.__env.gamma
             val = 0
             total_loss_q = []
@@ -280,10 +276,9 @@ class Trainer:
                     a = a.at[val,:].set(e.action)
                     r = r.at[val].set(e.reward.flatten())
                     n_s = n_s.at[val,:].set(e.next_state[0])
-                    n_a = n_a.at[val,:].set(e.next_action)
                     val += 1
                     if val >= state_shape[0]:
-                        q_learn_cnt, p_learn_cnt, loss_val_q, loss_val_pi, loss_balances = self.__env.shared_nn.update(gamma, s, a, r, n_s, n_a)
+                        q_learn_cnt, p_learn_cnt, loss_val_q, loss_val_pi, loss_balances = self.__env.shared_nn.update(gamma, s, a, r, n_s)
                         all_info = {}
                         all_info["trial"] = int(trial)
                         all_info["episode_num_per_unit"] = int(episode_num_per_unit)
@@ -296,10 +291,6 @@ class Trainer:
                         all_info["loss_val_pi"] = float(loss_val_pi)
                         for _i, loss_balance in enumerate(loss_balances):
                             all_info["loss_balance{}".format(_i)] = float(loss_balance)
-                        #all_info["J_pi"] = float(SharedNetwork.J_pi(   SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean())
-                        #all_info["J_q"] = float(SharedNetwork.J_q(    SharedNetwork.get_params(SharedNetwork.opt_states), s, a, r, n_s, n_a, gamma).mean())
-                        #all_info["log_Pi"] = float(SharedNetwork.log_Pi( SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean())
-                        #all_info["Q"] = float(SharedNetwork.apply_Q(SharedNetwork.get_params(SharedNetwork.opt_states), s, a).mean())
                         all_log_writer.write(all_info)
                         if verbose:
                             for value in all_info.values():
