@@ -70,11 +70,19 @@ class SharedNetwork:
         o_ls = nn_out[:,EnAction.omega * EnDist.num + EnDist.log_sigma]
         return a_m, a_ls, o_m, o_ls
     def decide_action(self, state):
+        batch_size = state.shape[0]
         a_m, a_ls, o_m, o_ls = SharedNetwork.apply_Pi(SharedNetwork.get_params(SharedNetwork.opt_states), state)
+        assert(a_m.shape == (batch_size,))
+        assert(a_ls.shape == (batch_size,))
+        assert(o_m.shape == (batch_size,))
+        assert(o_ls.shape == (batch_size,))
         self.__rng, rng_a, rng_o = jrandom.split(self.__rng, 3)
-        accel = a_m + jnp.exp(a_ls) * jrandom.normal(rng_a)
-        omega = o_m + jnp.exp(o_ls) * jrandom.normal(rng_o)
-        action = jnp.array([accel, omega])
+        accel = a_m + jnp.exp(a_ls) * jrandom.normal(rng_a, shape = (batch_size,))
+        omega = o_m + jnp.exp(o_ls) * jrandom.normal(rng_o, shape = (batch_size,))
+        assert(accel.shape == (batch_size,))
+        assert(omega.shape == (batch_size,))
+        action = jnp.append(accel.reshape(batch_size, 1), omega.reshape(batch_size, 1), axis = -1)
+        assert(action.shape == (batch_size, EnAction.num))
         return action
     @staticmethod
     def log_Pi(params, state, action):

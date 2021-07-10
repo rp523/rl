@@ -168,6 +168,7 @@ class Environment:
                 action = self.__agents[a].reserved_action
                 if action is None:
                     action = self.__shared_nn.decide_action(state)
+                    action = action.flatten()   # single agent size
 
                 if not fin:
                     self.__agents[a] = self.__step_evolve(self.__agents[a], action)
@@ -180,6 +181,8 @@ class Environment:
             for a in range(len(self.__agents)):
                 next_state = observe(self.__agents, a, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
                 next_action = self.__shared_nn.decide_action(next_state)
+                next_action = next_action.flatten()   # single agent size
+
                 self.__agents[a].reserved_action = next_action
                 state, action, reward, fin = rec[a]
                 experience = Experience(state, action.flatten(), reward, next_state, next_action.flatten(), fin)
@@ -211,12 +214,11 @@ class Trainer:
 
         self.__env = Environment(cfg, rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
     def learn_episode(self, verbose = True):
-        episode_unit_num = 10000
-        episode_num_per_unit = 8
+        episode_unit_num = 50000
+        episode_num_per_unit = 1
         dst_base_dir = Path("/home/isgsktyktt/work/tmp")
         log_writer = None
         all_log_writer = LogWriter(dst_base_dir.joinpath("learn.csv"))
-        total_log = False
         for trial in range(episode_unit_num):
             total_rewards = []
             for episode in range(episode_num_per_unit):
