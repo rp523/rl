@@ -47,8 +47,9 @@ class SharedNetwork:
         SharedNetwork.__opt_update = [None] * EnModel.num
         SharedNetwork.__get_params = [None] * EnModel.num
         self.__opt_states = [None] * EnModel.num
-        q_lr = 1E-4
+        q_lr = 1E-3
         p_lr = 1E-3
+        SharedNetwork.target_clip = 1.0 / jnp.sqrt(10)
         for i, nn, input_shape, output_num, _rng, lr in [
             (EnModel.q_se0,  SharedNetwork.state_encoder, SharedNetwork.__state_shape, feature_num, rng_se0, q_lr),
             (EnModel.q_se1,  SharedNetwork.state_encoder, SharedNetwork.__state_shape, feature_num, rng_se1, q_lr),
@@ -104,10 +105,13 @@ class SharedNetwork:
     def decide_action(self, state):
         params = SharedNetwork.get_params(self.__opt_states)
         self.__rng, rng = jrandom.split(self.__rng)
-        action, log_pi = SharedNetwork.__action_and_log_Pi(params, state, rng)
+        action, log_pi = SharedNetwork.__action_and_log_Pi(params, state, rng, False)
         return action
     @staticmethod
-    def __action_and_log_Pi(params, state, rng):
+    def __clip_eps(eps):
+        return jnp.clip(eps, - SharedNetwork.target_clip, SharedNetwork.target_clip)
+    @staticmethod
+    def __action_and_log_Pi(params, state, rng, clip):
         # action
         batch_size = state.shape[0]
         a_mean, a_lsig, o_mean, o_lsig = SharedNetwork.apply_Pi(params, state)
@@ -116,10 +120,19 @@ class SharedNetwork:
         assert(o_mean.shape == (batch_size,))
         assert(o_lsig.shape == (batch_size,))
         rng_a, rng_o = jrandom.split(rng)
-        accel = a_mean + jnp.exp(a_lsig) * jrandom.normal(rng_a, shape = (batch_size,))
-        omega = o_mean + jnp.exp(o_lsig) * jrandom.normal(rng_o, shape = (batch_size,))
+
+        eps_a = jrandom.normal(rng_a, shape = (batch_size,))
+        eps_a = jax.lax.cond(clip, SharedNetwork.__clip_eps, lambda x:x, eps_a)
+        eps_a *= 0.1
+        accel = a_mean + jnp.exp(a_lsig) * eps_a
         assert(accel.shape == (batch_size,))
+
+        eps_o = jrandom.normal(rng_o, shape = (batch_size,))
+        eps_o = jax.lax.cond(clip, SharedNetwork.__clip_eps, lambda x:x, eps_o)
+        eps_o *= 0.1
+        omega = o_mean + jnp.exp(o_lsig) * eps_o
         assert(omega.shape == (batch_size,))
+
         action = jnp.append(accel.reshape(batch_size, 1), omega.reshape(batch_size, 1), axis = -1)
         assert(action.shape == (batch_size, EnAction.num))
 
@@ -167,7 +180,7 @@ class SharedNetwork:
             SharedNetwork.opt_states[i] = SharedNetwork.__opt_init[i](params[i])
     @staticmethod
     def Jq(params, s, a, r, n_s, gamma, rng, learned_m):
-        n_a, log_pi = SharedNetwork.__action_and_log_Pi(params, n_s, rng)
+        n_a, log_pi = SharedNetwork.__action_and_log_Pi(params, n_s, rng, True)
         q_t = SharedNetwork.apply_Q_target(params, n_s, n_a)
         next_V = q_t - log_pi
         assert(next_V.shape == (s.shape[0], 1))
@@ -179,7 +192,7 @@ class SharedNetwork:
         return j_q
     @staticmethod
     def Q_and_Jpi(params, state, rng, m):
-        action, log_pi = SharedNetwork.__action_and_log_Pi(params, state, rng)
+        action, log_pi = SharedNetwork.__action_and_log_Pi(params, state, rng, False)
         q = SharedNetwork.apply_Q(params, state, action, m)
         j_pi = log_pi - q
         return q, j_pi
@@ -200,7 +213,7 @@ class SharedNetwork:
         return loss
     @staticmethod
     def __update_target(opt_states):
-        tau = 0.05
+        tau = 0.005
         params = SharedNetwork.get_params(opt_states)
         for m in range(2):
             for i in [  EnModel.q_se0,
@@ -266,32 +279,27 @@ class SharedNetwork:
 
     @staticmethod
     def state_encoder(output_num):
-        return serial(  Conv( 8, (7, 7), (1, 1), "VALID"), Tanh,
-                        Conv(16, (5, 5), (1, 1), "VALID"), Tanh,
-                        Conv(16, (3, 3), (1, 1), "VALID"), Tanh,
-                        Conv(32, (3, 3), (1, 1), "VALID"), Tanh,
-                        Conv(32, (3, 3), (1, 1), "VALID"), Tanh,
+        return serial(  Conv( 8, (7, 7), (1, 1), "SAME"), Tanh, BatchNorm(),
+                        Conv(16, (5, 5), (1, 1), "SAME"), Tanh, BatchNorm(),
+                        Conv(32, (3, 3), (1, 1), "SAME"), Tanh, BatchNorm(),
                         Flatten,
                         Dense(output_num)
         )
     @staticmethod
     def action_encoder(output_num):
-        return serial(  Dense(128), Tanh,
-                        Dense(128), Tanh,
-                        Dense(128), Tanh,
+        return serial(  Dense(128), Tanh, BatchNorm(0),
+                        Dense(128), Tanh, BatchNorm(0),
                         Dense(output_num)
         )
     @staticmethod
     def policy_decoder(output_num):
-        return serial(  Dense(128), Tanh,
-                        Dense(128), Tanh,
-                        Dense(128), Tanh,
+        return serial(  Dense(128), Tanh, BatchNorm(0),
+                        Dense(128), Tanh, BatchNorm(0),
                         Dense(output_num)
         )
     def value_decoder(output_num):
-        return serial(  Dense(128), Tanh,
-                        Dense(128), Tanh,
-                        Dense(128), Tanh,
+        return serial(  Dense(128), Tanh, BatchNorm(0),
+                        Dense(128), Tanh, BatchNorm(0),
                         Dense(1),
                         Flatten
         )
