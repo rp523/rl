@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import jax.random as jrandom
 from pathlib import Path
 from tqdm import tqdm
-from collections import namedtuple
+from collections import namedtuple, deque
 import subprocess
 import hydra
 
@@ -40,8 +40,8 @@ class Environment:
         self.__max_t = max_t
         self.__dt = dt
         self.__agents = None
-        self.__experiences = []
-        self.__gamma = 1.0#0.5 ** (1.0 / (half_decay_dt / self.dt))
+        self.__experiences = deque(maxlen = batch_size * 32)
+        self.__gamma = 0.99#0.5 ** (1.0 / (half_decay_dt / self.dt))
 
     @property
     def n_ped_max(self):
@@ -121,9 +121,6 @@ class Environment:
     def reset(self):
         self.__agents = self.__make_init_state()
 
-    def clear_experience(self):
-        self.__experiences.clear()
-
     def __step_evolve(self, agent, action):
         accel, omega = action
         y_min = agent.radius_m
@@ -154,7 +151,7 @@ class Environment:
         reward += (+ 0.5) * approach_rate / max_step
         # reach
         if own.reached_goal():
-            reward += 1.0
+            reward += 0.5
         return reward
     
     def evolve(self):
@@ -211,8 +208,8 @@ class Trainer:
 
         self.__env = Environment(cfg, rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
     def learn_episode(self, verbose = True):
-        episode_unit_num = 10000
-        episode_num_per_unit = 32
+        episode_unit_num = 1000000
+        episode_num_per_unit = 1
         dst_base_dir = Path("/home/isgsktyktt/work/tmp")
         log_writer = None
         all_log_writer = LogWriter(dst_base_dir.joinpath("learn.csv"))
@@ -296,7 +293,7 @@ class Trainer:
                         if verbose:
                             for value in all_info.values():
                                 if isinstance(value, float):
-                                    print("{}".format(value), end = ",")
+                                    print("{:.3f}".format(value), end = ",")
                                 else:
                                     print(value, end = ",")
                             print()
@@ -308,7 +305,6 @@ class Trainer:
                 weight_path.parent.mkdir(parents = True)
             self.__env.shared_nn.save(weight_path)
 
-            self.__env.clear_experience()
             #episode_num_per_unit = min(episode_num_per_unit + 1, state_shape[0])
             
 @hydra.main(config_path = ".", config_name = "main.yaml")
