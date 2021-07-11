@@ -17,6 +17,7 @@ from delay import DelayGen
 from common import *
 from observer import observe
 from log import LogWriter
+from vis import make_all_state_img
 
 Experience = namedtuple("Experience",
                         [
@@ -159,8 +160,9 @@ class Environment:
             rec = []
             for a in range(len(self.__agents)):
                 fin = self.__agents[a].reached_goal()
-                state = observe(self.__agents, a, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
-
+                state = observe(self.__agents, a, self.map_h, self.map_w, self.__state_shape[1], self.__state_shape[2])
+                #make_all_state_img(self.__agents, self.map_h, self.map_w, pcpt_h = self.__state_shape[1], pcpt_w = self.__state_shape[2]).show();exit()
+                
                 action = self.__shared_nn.decide_action(state)
                 action = action.flatten()   # single agent size
 

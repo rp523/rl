@@ -59,14 +59,17 @@ def get_concat_v(im1, im2):
     dst.paste(im2, (0, im1.height))
     return dst
 
-def output_state_png(agents, dst_path, map_h, map_w, step, dt):
-    pcpt_h = 128
-    pcpt_w = 128
+def make_all_state_img(agents, map_h, map_w, pcpt_h, pcpt_w):
     img = ImageOps.flip(make_state_img(agents, map_h, map_w, pcpt_h, pcpt_w))
-    img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, map_h, map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.occupy] + 1.0) / 2)).astype(onp.uint8)))
-    img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, map_h, map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.vy    ] + 1.5) / 3)).astype(onp.uint8)))
-    img = get_concat_h(img, Image.fromarray((255 * ((observe(agents, 0, map_h, map_w, pcpt_h, pcpt_w)[::-1,:,EnChannel.vx    ] + 1.5) / 3)).astype(onp.uint8)))
+    state = observe(agents, 0, map_h, map_w, pcpt_h, pcpt_w)
+    occupy_img = Image.fromarray((255 * ((state[0, ::-1,:,EnChannel.occupy] + 1.0) / 2)).astype(onp.uint8))
+    img = get_concat_h(img, occupy_img)
+    img = get_concat_h(img, Image.fromarray((255 * ((state[0, ::-1,:,EnChannel.vy    ] + 1.5) / 3)).astype(onp.uint8)))
+    img = get_concat_h(img, Image.fromarray((255 * ((state[0, ::-1,:,EnChannel.vx    ] + 1.5) / 3)).astype(onp.uint8)))
+    return img
 
+def output_state_png(agents, dst_path, map_h, map_w, pcpt_h, pcpt_w, step, dt):
+    img = make_all_state_img(agents, map_h, map_w, pcpt_h, pcpt_w)
     if not dst_path.parent.exists():
         dst_path.parent.mkdir(parents = True)
     dr = ImageDraw.Draw(img)
@@ -79,16 +82,15 @@ def main():
 
     import time
     draw_cnt = 0
-    plt.clf()
-    fig, axs = plt.subplots(2,3)
-    for ee in range(1):
-        csv_dir_path = Path(r"/home/isgsktyktt/work/outputs/2021-07-08/10-12-45/tmp")
-        csv_path = csv_dir_path.joinpath("learn.csv")
-        assert(csv_path.exists())
+    csv_dir_path = Path(r"/home/isgsktyktt/work/tmp")
+    csv_path = csv_dir_path.joinpath("learn.csv")
+    print(csv_path)
+    assert(csv_path.exists())
 
+    while 1:
+        plt.clf()
+        fig, axs = plt.subplots(2, 2)
         df = pd.read_csv(csv_path)
-
-
         x = []
         r = []
         trials = onp.unique(df["trial"])
@@ -100,30 +102,34 @@ def main():
                 x.append(len(x))
                 r.append(reward)
         markersize = 5
-        axs[ee,0].plot(x, r, ".", markersize = markersize, label = "reward")
-        axs[ee,0].grid(True)
-        axs[ee,0].set_title("Episode Reward")
+        axs[0, 0].plot(x, r, ".", markersize = markersize)#, label = "Reward")
+        axs[0, 0].grid(True)
+        #axs[0, 0].legend()
+        axs[0, 0].set_title("reward")
 
-        x = df["learn_cnt"]
-        l = df["loss_val_q"]
-        markersize = 5
-        axs[ee,1].plot(x, l, ".", markersize = markersize, label = "loss")
-        axs[ee,1].grid(True)
-        axs[ee,1].set_title("Q Loss{}".format(ee))
-        if draw_cnt != l.size:
-            draw_cnt = l.size
-            #plt.show()
-            #plt.savefig(r"/home/isgsktyktt/work/now.png")
-        x = df["learn_cnt"]
+        x = df["p_learn_cnt"]
         l = df["loss_val_pi"]
         markersize = 5
-        axs[ee,2].plot(x, l, ".", markersize = markersize, label = "loss")
-        axs[ee,2].grid(True)
-        axs[ee,2].set_title("Pi Loss{}".format(ee))
+        axs[0, 1].plot(x, l, ".", markersize = markersize)#, label = "Pi-Loss")
+        axs[0, 1].grid(True)
+        #axs[0, 1].legend()
+        axs[0, 1].set_title("pi-loss")
+        #axs[2].set_ylim(-5, 0)
+
+        for i in range(2):
+            x = df["q_learn_cnt"]
+            l = df["loss_val_q{}".format(i)]
+            markersize = 5
+            axs[1, i].plot(x, l, ".", markersize = markersize)#, label = "Q-Loss{}".format(i))
+            axs[1, i].grid(True)
+            #axs[1, i].legend()
+            #axs[1].set_yscale("log")
+            #axs[1].set_ylim(0, 5)
+
+        #plt.show()
         if draw_cnt != l.size:
             draw_cnt = l.size
-            #plt.show()
-            #plt.savefig(r"/home/isgsktyktt/work/now.png")
-    plt.show()
+            plt.savefig(csv_dir_path.joinpath("now.png"))
+        time.sleep(5)
 if __name__ == "__main__":
     main()
