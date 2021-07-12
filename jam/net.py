@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import pickle
 from enum import IntEnum, auto
-from common import *
+from common import EnChannel, EnAction, EnDist
 from jax.experimental.stax import serial, parallel, Dense, Tanh, Conv, Flatten, FanOut, FanInSum, Identity, BatchNorm
 from jax.experimental.optimizers import adam, sgd
 import sys
@@ -34,7 +34,7 @@ class EnModel(IntEnum):
     num = auto()
 class SharedNetwork:
     def __init__(self, cfg, rng, init_weight_path, batch_size, pcpt_h, pcpt_w):
-        self.__rng, rng_se0, rng_se1, rng_ae0, rng_ae1, rng_vd0, rng_vd1, rng_seq, rng_pdq = jrandom.split(rng, 9)
+        self.__rng, rng_se0, rng_se1, rng_ae0, rng_ae1, rng_vd0, rng_vd1, rng_sep, rng_pdp = jrandom.split(rng, 9)
 
         feature_num = 128
         SharedNetwork.__temperature = cfg.temperature
@@ -42,11 +42,11 @@ class SharedNetwork:
         action_shape = (batch_size, EnAction.num)
         feature_shape = (batch_size, feature_num)
 
-        SharedNetwork.__apply_fun = [None] * EnModel.num
-        SharedNetwork.__opt_init = [None] * EnModel.num
+        SharedNetwork.__apply_fun  = [None] * EnModel.num
+        SharedNetwork.__opt_init   = [None] * EnModel.num
         SharedNetwork.__opt_update = [None] * EnModel.num
         SharedNetwork.__get_params = [None] * EnModel.num
-        self.__opt_states = [None] * EnModel.num
+        self.__opt_states          = [None] * EnModel.num
         q_lr = 1E-4
         p_lr = 1E-4
         SharedNetwork.target_clip = 1.0 / jnp.sqrt(10)
@@ -66,8 +66,8 @@ class SharedNetwork:
             (EnModel.q_vd0t, SharedNetwork.value_decoder, feature_shape, (1,), rng_vd0, q_lr),
             (EnModel.q_vd1t, SharedNetwork.value_decoder, feature_shape, (1,), rng_vd1, q_lr),
 
-            (EnModel.p_se, SharedNetwork.state_encoder, SharedNetwork.__state_shape, feature_num, rng_seq, p_lr),
-            (EnModel.p_pd, SharedNetwork.policy_decoder, feature_shape, EnAction.num * EnDist.num, rng_pdq, p_lr),
+            (EnModel.p_se, SharedNetwork.state_encoder, SharedNetwork.__state_shape, feature_num, rng_sep, p_lr),
+            (EnModel.p_pd, SharedNetwork.policy_decoder, feature_shape, EnAction.num * EnDist.num, rng_pdp, p_lr),
             ]:
             init_fun, SharedNetwork.__apply_fun[i] = nn(output_num)
             SharedNetwork.__opt_init[i], SharedNetwork.__opt_update[i], SharedNetwork.__get_params[i] = adam(lr)
@@ -101,13 +101,11 @@ class SharedNetwork:
         nn_out = SharedNetwork.__apply_fun[pd](pd_params, feature)
         assert(nn_out.shape == (state.shape[0], EnAction.num * EnDist.num))
 
-        a_mean =  nn_out[:,EnAction.accel * EnDist.num + EnDist.mean]
-        a_lsig = nn_out[:,EnAction.accel * EnDist.num + EnDist.log_sigma]
-        o_mean =  nn_out[:,EnAction.omega * EnDist.num + EnDist.mean]
-        o_lsig = nn_out[:,EnAction.omega * EnDist.num + EnDist.log_sigma]
+        a_mean = nn_out[:, EnAction.accel * EnDist.num + EnDist.mean     ]
+        a_lsig = nn_out[:, EnAction.accel * EnDist.num + EnDist.log_sigma]
+        o_mean = nn_out[:, EnAction.omega * EnDist.num + EnDist.mean     ]
+        o_lsig = nn_out[:, EnAction.omega * EnDist.num + EnDist.log_sigma]
         
-        a_lsig += jnp.log(0.1)
-        o_lsig += jnp.log(0.1)
         return a_mean, a_lsig, o_mean, o_lsig
     def decide_action(self, state):
         params = SharedNetwork.get_params(self.__opt_states)
@@ -130,19 +128,19 @@ class SharedNetwork:
 
         eps_a = jrandom.normal(rng_a, shape = (batch_size,))
         eps_a = jax.lax.cond(clip, SharedNetwork.__clip_eps, lambda x:x, eps_a)
-        accel = a_mean + jnp.exp(a_lsig) * eps_a
+        a_sig = jnp.exp(a_lsig)
+        accel = a_mean + a_sig * eps_a
         assert(accel.shape == (batch_size,))
 
         eps_o = jrandom.normal(rng_o, shape = (batch_size,))
         eps_o = jax.lax.cond(clip, SharedNetwork.__clip_eps, lambda x:x, eps_o)
-        omega = o_mean + jnp.exp(o_lsig) * eps_o
+        o_sig = jnp.exp(o_lsig)
+        omega = o_mean + o_sig * eps_o
         assert(omega.shape == (batch_size,))
 
         action = jnp.append(accel.reshape(batch_size, 1), omega.reshape(batch_size, 1), axis = -1)
         assert(action.shape == (batch_size, EnAction.num))
 
-        a_sig = jnp.exp(a_lsig)
-        o_sig = jnp.exp(o_lsig)
         log_pi = - ((accel - a_mean) ** 2) / (2 * (a_sig ** 2)) - ((omega - o_mean) ** 2) / (2 * (o_sig ** 2)) - 2.0 * 0.5 * jnp.log(2 * jnp.pi) - a_lsig - o_lsig
         log_pi = (SharedNetwork.__temperature * log_pi).reshape((batch_size, 1))
 
@@ -172,8 +170,6 @@ class SharedNetwork:
         assert(q_t.shape == (state.shape[0], 1))
         return q_t
 
-        assert(nn_out.shape == (state.shape[0], 1))
-        return nn_out
     def save(self, weight_path):
         params = SharedNetwork.get_params(self.__opt_states)
         with open(weight_path, 'wb') as f:
@@ -185,19 +181,19 @@ class SharedNetwork:
             self.__opt_states[i] = SharedNetwork.__opt_init[i](params[i])
     @staticmethod
     def Jq(params, s, a, r, n_s, gamma, rng, learned_m):
-        n_a, log_pi = SharedNetwork.__action_and_log_Pi(params, n_s, rng, True)
+        n_a, log_pi = SharedNetwork.__action_and_log_Pi(params, n_s, rng, clip = True)
         q_t = SharedNetwork.apply_Q_smaller_target(params, n_s, n_a)
         next_V = q_t - log_pi
-        assert(next_V.shape == (s.shape[0], 1))
+        assert(next_V.shape == (n_s.shape[0], 1))
         r = r.reshape((-1 ,1))
         q = SharedNetwork.apply_Q(params, s, a, learned_m)
         td = q - (r + gamma * next_V)
-        j_q = 0.5 * td ** 2
+        j_q = 0.5 * (td ** 2)
         assert(j_q.size == s.shape[0])
         return j_q
     @staticmethod
     def J_pi(params, state, rng):
-        action, log_pi = SharedNetwork.__action_and_log_Pi(params, state, rng, False)
+        action, log_pi = SharedNetwork.__action_and_log_Pi(params, state, rng, clip = False)
         q_t = SharedNetwork.apply_Q_smaller_target(params, state, action)
         j_pi = log_pi - q_t
         return j_pi
@@ -225,9 +221,9 @@ class SharedNetwork:
                         EnModel.q_vd0
                         ]:
                 src_i = i + m
-                dst_i = i + m + 2
-                new_param = net_maker.recursive_linear(params[src_i], params[dst_i], tau, (1.0 - tau))
-                opt_states[dst_i] = SharedNetwork.__opt_init[dst_i](new_param)
+                tgt_i = i + m + 2
+                new_param = net_maker.recursive_linear(params[src_i], params[tgt_i], tau, (1.0 - tau))
+                opt_states[tgt_i] = SharedNetwork.__opt_init[tgt_i](new_param)
         return opt_states
     @staticmethod
     def __balance_loss(params, loss_diffs):
@@ -237,33 +233,34 @@ class SharedNetwork:
     @staticmethod
     @jax.jit
     def __update(q_idx, p_idx, _opt_states, loss_balance, s, a, r, n_s, gamma, rng):
-        rng_q, rng_p = jrandom.split(rng)
+        rng_q0, rng_q1, rng_p = jrandom.split(rng, 3)
+        rng_qs = (rng_q0, rng_q1)
         params = SharedNetwork.get_params(_opt_states)
         
-        loss_val_q0, grad_val0 = jax.value_and_grad(SharedNetwork.__q_loss)(params, s, a, r, n_s, gamma, rng_q, 0)
-        loss_val_q1, grad_val1 = jax.value_and_grad(SharedNetwork.__q_loss)(params, s, a, r, n_s, gamma, rng_q, 1)
-        #grad_vals = net_maker.recursive_scaling(grad_val, loss_balance[0])
-        for i in [  EnModel.q_se0,
-                    EnModel.q_ae0,
-                    EnModel.q_vd0
-                    ]:
-            _opt_states[i] = SharedNetwork.__opt_update[i](q_idx, grad_val0[i], _opt_states[i])
-        for i in [  EnModel.q_se1,
-                    EnModel.q_ae1,
-                    EnModel.q_vd1
-                    ]:
-            _opt_states[i] = SharedNetwork.__opt_update[i](q_idx, grad_val1[i], _opt_states[i])
+        q_loss_vals = []
+        for m in range(2):
+            q_loss_val, q_grad_val = jax.value_and_grad(SharedNetwork.__q_loss)(params, s, a, r, n_s, gamma, rng_qs[m], m)
+            #grad_vals = net_maker.recursive_scaling(grad_val, loss_balance[0])
+            for i in [  EnModel.q_se0,
+                        EnModel.q_ae0,
+                        EnModel.q_vd0
+                        ]:
+                p_i = i + m
+                _opt_states[p_i] = SharedNetwork.__opt_update[p_i](q_idx, q_grad_val[p_i], _opt_states[p_i])
+            q_loss_vals.append(q_loss_val)
         q_idx = q_idx + 1
         
-        loss_val_pi, grad_val = jax.value_and_grad(SharedNetwork.__pi_loss)(params, s, rng_p)
+        pi_loss_val, pi_grad_val = jax.value_and_grad(SharedNetwork.__pi_loss)(params, s, rng_p)
         #grad_val = net_maker.recursive_scaling(grad_val, loss_balance[1])
-        for i in [EnModel.p_se, EnModel.p_pd]:
-            _opt_states[i] = SharedNetwork.__opt_update[i](p_idx, grad_val[i], _opt_states[i])
+        for i in [  EnModel.p_se,
+                    EnModel.p_pd
+                    ]:
+            _opt_states[i] = SharedNetwork.__opt_update[i](p_idx, pi_grad_val[i], _opt_states[i])
         p_idx = p_idx + 1
         
         _opt_states = jax.lax.cond((q_idx % 1 == 0), SharedNetwork.__update_target, lambda x:x, _opt_states)
 
-        return q_idx, p_idx, _opt_states, jnp.array([loss_val_q0, loss_val_q1]), loss_val_pi
+        return q_idx, p_idx, _opt_states, jnp.array(q_loss_vals), pi_loss_val
     def update(self, gamma, s, a, r, n_s):
         #if self.__q_learn_cnt >= 2:
         #    grad_val = jax.jit(jax.grad(SharedNetwork.__balance_loss))(SharedNetwork.__loss_balance, SharedNetwork.__loss_diffs)
@@ -284,27 +281,23 @@ class SharedNetwork:
 
     @staticmethod
     def state_encoder(output_num):
-        return serial(  Conv( 8, (7, 7), (1, 1), "SAME"), Tanh, BatchNorm(),
-                        Conv(16, (5, 5), (1, 1), "SAME"), Tanh, BatchNorm(),
-                        Conv(32, (3, 3), (1, 1), "SAME"), Tanh, BatchNorm(),
+        return serial(  Conv(4, (3, 3), (1, 1), "SAME"), Tanh, BatchNorm(),
+                        Conv(4, (3, 3), (1, 1), "SAME"), Tanh, BatchNorm(),
+                        Conv(4, (3, 3), (1, 1), "SAME"), Tanh, BatchNorm(),
                         Flatten,
                         Dense(output_num)
         )
     @staticmethod
     def action_encoder(output_num):
         return serial(  Dense(128), Tanh, BatchNorm(0),
-                        Dense(128), Tanh, BatchNorm(0),
                         Dense(output_num)
         )
     @staticmethod
     def policy_decoder(output_num):
         return serial(  Dense(128), Tanh, BatchNorm(0),
-                        Dense(128), Tanh, BatchNorm(0),
                         Dense(output_num)
         )
     def value_decoder(output_num):
         return serial(  Dense(128), Tanh, BatchNorm(0),
-                        Dense(128), Tanh, BatchNorm(0),
                         Dense(1),
-                        Flatten
         )
