@@ -290,14 +290,14 @@ class Trainer:
                     n_s = n_s.at[val,:].set(e.next_state[0])
                     val += 1
                     if val >= state_shape[0]:
-                        q_learn_cnt, p_learn_cnt, loss_val_qs, loss_val_pi, loss_balances = self.__env.shared_nn.update(gamma, s, a, r, n_s)
+                        q_learn_cnt, p_learn_cnt, temperature, loss_val_qs, loss_val_pi, loss_balances = self.__env.shared_nn.update(gamma, s, a, r, n_s)
                         all_info = {}
                         all_info["trial"] = int(trial)
                         all_info["episode_num_per_unit"] = int(episode_num_per_unit)
                         all_info["episode"] = int(episode)
                         all_info["q_learn_cnt"] = int(q_learn_cnt)
                         #all_info["p_learn_cnt"] = int(p_learn_cnt)
-                        #all_info["temperature"] = float(self.__cfg.nn.temperature)
+                        all_info["temperature"] = float(temperature)
                         all_info["total_reward_mean"] = float(total_reward_mean)
                         for _i, loss_val_q in enumerate(loss_val_qs):
                             all_info["loss_val_q{}".format(_i)] = float(loss_val_q)
