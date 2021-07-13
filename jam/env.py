@@ -41,7 +41,7 @@ class Environment:
         self.__max_t = max_t
         self.__dt = dt
         self.__agents = None
-        self.__experiences = deque(maxlen = batch_size * 32)
+        self.__experiences = deque(maxlen = batch_size ** 2)
         self.__gamma = 0.99#0.5 ** (1.0 / (half_decay_dt / self.dt))
 
     @property
@@ -207,11 +207,14 @@ class Trainer:
         n_ped_max = 1
         half_decay_dt = 10.0
         init_weight_path = None#"/home/isgsktyktt/work/param.bin"
+        self.__buf_max = batch_size * batch_size
 
         self.__env = Environment(cfg, rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
     def learn_episode(self, verbose = True):
         episode_unit_num = 1000000
         episode_num_per_unit = 1
+        learn_num_per_unit = 1
+        
         dst_base_dir = Path("/home/isgsktyktt/work/tmp")
         log_writer = None
         all_log_writer = LogWriter(dst_base_dir.joinpath("learn.csv"))
@@ -254,7 +257,10 @@ class Trainer:
                 for t in total_reward:
                     total_rewards.append(float(t))
 
+            if len(self.__env.experiences) < self.__buf_max:
+                continue
             # after episode unit
+            learn_cnt_per_unit = 0
             total_reward_mean = float(jnp.array(total_rewards).mean())
             state_shape = self.__env.state_shape
             s = jnp.zeros(state_shape, dtype = jnp.float32)
@@ -265,11 +271,10 @@ class Trainer:
             val = 0
             total_loss_q = []
             total_loss_pi = []
-            self.__rng, rng = jrandom.split(self.__rng)
-            max_step = int(self.__env.max_t / self.__env.dt)
-            for i in jrandom.randint(rng, (len(self.__env.experiences),), 0, len(self.__env.experiences)):
-            #for i in jrandom.randint(rng, (int(self.__env.max_t / self.__env.dt) * 100,), 0, len(self.__env.experiences)):
-                e = self.__env.experiences[i]
+            while 1:
+                self.__rng, rng = jrandom.split(self.__rng)
+                e_i = int(jrandom.randint(rng, (1,), 0, len(self.__env.experiences)))
+                e = self.__env.experiences[e_i]
                 if not e.finished:
                     s = s.at[val,:].set(e.state[0])
                     a = a.at[val,:].set(e.action)
@@ -283,14 +288,14 @@ class Trainer:
                         all_info["episode_num_per_unit"] = int(episode_num_per_unit)
                         all_info["episode"] = int(episode)
                         all_info["q_learn_cnt"] = int(q_learn_cnt)
-                        all_info["p_learn_cnt"] = int(p_learn_cnt)
-                        all_info["temperature"] = float(self.__cfg.nn.temperature)
+                        #all_info["p_learn_cnt"] = int(p_learn_cnt)
+                        #all_info["temperature"] = float(self.__cfg.nn.temperature)
                         all_info["total_reward_mean"] = float(total_reward_mean)
                         for _i, loss_val_q in enumerate(loss_val_qs):
                             all_info["loss_val_q{}".format(_i)] = float(loss_val_q)
                         all_info["loss_val_pi"] = float(loss_val_pi)
-                        for _i, loss_balance in enumerate(loss_balances):
-                            all_info["loss_balance{}".format(_i)] = float(loss_balance)
+                        #for _i, loss_balance in enumerate(loss_balances):
+                        #    all_info["loss_balance{}".format(_i)] = float(loss_balance)
                         all_log_writer.write(all_info)
                         if verbose:
                             for value in all_info.values():
@@ -302,6 +307,9 @@ class Trainer:
                         total_loss_q.append(loss_val_q)
                         total_loss_pi.append(loss_val_pi)
                         val = 0
+                        learn_cnt_per_unit += 1
+                        if (learn_cnt_per_unit >= learn_num_per_unit):
+                            break
             weight_path = dst_base_dir.joinpath("weight", "param{}.bin".format(trial))
             if not weight_path.parent.exists():
                 weight_path.parent.mkdir(parents = True)
