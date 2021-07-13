@@ -61,10 +61,10 @@ class SharedNetwork:
             (EnModel.q_ae0t, SharedNetwork.action_encoder, action_shape, feature_num, rng_ae0, q_lr),
             (EnModel.q_ae1t, SharedNetwork.action_encoder, action_shape, feature_num, rng_ae1, q_lr),
             
-            (EnModel.q_vd0,  SharedNetwork.value_decoder, feature_shape, (1,), rng_vd0, q_lr),
-            (EnModel.q_vd1,  SharedNetwork.value_decoder, feature_shape, (1,), rng_vd1, q_lr),
-            (EnModel.q_vd0t, SharedNetwork.value_decoder, feature_shape, (1,), rng_vd0, q_lr),
-            (EnModel.q_vd1t, SharedNetwork.value_decoder, feature_shape, (1,), rng_vd1, q_lr),
+            (EnModel.q_vd0,  SharedNetwork.value_decoder, feature_shape, 1, rng_vd0, q_lr),
+            (EnModel.q_vd1,  SharedNetwork.value_decoder, feature_shape, 1, rng_vd1, q_lr),
+            (EnModel.q_vd0t, SharedNetwork.value_decoder, feature_shape, 1, rng_vd0, q_lr),
+            (EnModel.q_vd1t, SharedNetwork.value_decoder, feature_shape, 1, rng_vd1, q_lr),
 
             (EnModel.p_se, SharedNetwork.state_encoder, SharedNetwork.__state_shape, feature_num, rng_sep, p_lr),
             (EnModel.p_pd, SharedNetwork.policy_decoder, feature_shape, EnAction.num * EnDist.num, rng_pdp, p_lr),
@@ -290,15 +290,16 @@ class SharedNetwork:
         )
     @staticmethod
     def action_encoder(output_num):
-        return serial(  Dense(128), Tanh, BatchNorm(0),
+        return serial(  Dense(128), Tanh,# BatchNormつけるとなぜか出力が固定値になる,
                         Dense(output_num)
         )
     @staticmethod
     def policy_decoder(output_num):
-        return serial(  Dense(128), Tanh, BatchNorm(0),
+        return serial(  Dense(128), Tanh,# BatchNormつけるとなぜか出力が固定値になる
                         Dense(output_num)
         )
+    @staticmethod
     def value_decoder(output_num):
-        return serial(  Dense(128), Tanh, BatchNorm(0),
-                        Dense(1),
+        return serial(  Dense(128), Tanh,# BatchNormつけるとなぜか出力が固定値になる
+                        Dense(output_num),
         )
