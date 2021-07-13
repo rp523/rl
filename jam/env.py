@@ -302,8 +302,8 @@ class Trainer:
                         for _i, loss_val_q in enumerate(loss_val_qs):
                             all_info["loss_val_q{}".format(_i)] = float(loss_val_q)
                         all_info["loss_val_pi"] = float(loss_val_pi)
-                        #for _i, loss_balance in enumerate(loss_balances):
-                        #    all_info["loss_balance{}".format(_i)] = float(loss_balance)
+                        for _i, loss_balance in enumerate(loss_balances):
+                            all_info["loss_balance{}".format(_i)] = float(loss_balance)
                         all_log_writer.write(all_info)
                         if verbose:
                             for value in all_info.values():

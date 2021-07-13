@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 import pickle
+import numpy as onp
 from enum import IntEnum, auto
 from common import EnChannel, EnAction, EnDist
 from jax.experimental.stax import serial, parallel, Dense, Tanh, Conv, Flatten, FanOut, FanInSum, Identity, BatchNorm
@@ -70,7 +71,7 @@ class SharedNetwork:
             (EnModel.p_pd, SharedNetwork.policy_decoder, feature_shape, EnAction.num * EnDist.num, rng_pdp, p_lr),
             ]:
             init_fun, SharedNetwork.__apply_fun[i] = nn(output_num)
-            SharedNetwork.__opt_init[i], SharedNetwork.__opt_update[i], SharedNetwork.__get_params[i] = adam(lr)
+            SharedNetwork.__opt_init[i], SharedNetwork.__opt_update[i], SharedNetwork.__get_params[i] = sgd(lr)
             _, init_params = init_fun(_rng, input_shape)
             self.__opt_states[i] = SharedNetwork.__opt_init[i](init_params)
         
@@ -83,6 +84,7 @@ class SharedNetwork:
         SharedNetwork.__loss_num = 2
         SharedNetwork.__loss_balance = jnp.zeros((SharedNetwork.__loss_num,), dtype = jnp.float32)
         SharedNetwork.__loss_diffs = jnp.zeros((SharedNetwork.__loss_num,), dtype = jnp.float32)
+        SharedNetwork.__loss_bufs = jnp.zeros((SharedNetwork.__loss_num,), dtype = jnp.float32)
     @staticmethod
     def get_params(opt_states):
         params = [None] * EnModel.num
@@ -227,7 +229,7 @@ class SharedNetwork:
         return opt_states
     @staticmethod
     def __balance_loss(params, loss_diffs):
-        pos_loss_diffs = jnp.clip(loss_diffs, 0.0, loss_diffs)
+        pos_loss_diffs = jnp.maximum(loss_diffs, jnp.zeros(loss_diffs.shape, dtype = jnp.float32))
         loss = (jax.nn.softmax(params) * pos_loss_diffs).mean()
         return loss
     @staticmethod
@@ -240,7 +242,7 @@ class SharedNetwork:
         q_loss_vals = []
         for m in range(2):
             q_loss_val, q_grad_val = jax.value_and_grad(SharedNetwork.__q_loss)(params, s, a, r, n_s, gamma, rng_qs[m], m)
-            #grad_vals = net_maker.recursive_scaling(grad_val, loss_balance[0])
+            q_grad_val = net_maker.recursive_scaling(q_grad_val, loss_balance[0])
             for i in [  EnModel.q_se0,
                         EnModel.q_ae0,
                         EnModel.q_vd0
@@ -251,7 +253,7 @@ class SharedNetwork:
         q_idx = q_idx + 1
         
         pi_loss_val, pi_grad_val = jax.value_and_grad(SharedNetwork.__pi_loss)(params, s, rng_p)
-        #grad_val = net_maker.recursive_scaling(grad_val, loss_balance[1])
+        pi_grad_val = net_maker.recursive_scaling(pi_grad_val, loss_balance[1])
         for i in [  EnModel.p_se,
                     EnModel.p_pd
                     ]:
@@ -262,21 +264,19 @@ class SharedNetwork:
 
         return q_idx, p_idx, _opt_states, jnp.array(q_loss_vals), pi_loss_val
     def update(self, gamma, s, a, r, n_s):
-        #if self.__q_learn_cnt >= 2:
-        #    grad_val = jax.jit(jax.grad(SharedNetwork.__balance_loss))(SharedNetwork.__loss_balance, SharedNetwork.__loss_diffs)
-        #    SharedNetwork.__loss_balance = SharedNetwork.__loss_balance - 0.1 * grad_val
         loss_balance = jax.nn.softmax(SharedNetwork.__loss_balance)
 
         rng, self.__rng = jrandom.split(self.__rng)
         self.__q_learn_cnt,     self.__p_learn_cnt, self.__opt_states, loss_val_qs, loss_val_pi = SharedNetwork.__update(
             self.__q_learn_cnt, self.__p_learn_cnt, self.__opt_states, loss_balance, s, a, r, n_s, gamma, rng)
 
-        if self.__q_learn_cnt == 1:
-            SharedNetwork.__loss_diffs = SharedNetwork.__loss_diffs.at[0].set(loss_val_qs.mean())
-            SharedNetwork.__loss_diffs = SharedNetwork.__loss_diffs.at[1].set(loss_val_pi)
-        else:
-            SharedNetwork.__loss_diffs = SharedNetwork.__loss_diffs.at[0].set(loss_val_qs.mean()  - SharedNetwork.__loss_diffs[0])
-            SharedNetwork.__loss_diffs = SharedNetwork.__loss_diffs.at[1].set(loss_val_pi - SharedNetwork.__loss_diffs[1])
+        if self.__q_learn_cnt > 1:
+            SharedNetwork.__loss_diffs = SharedNetwork.__loss_diffs.at[0].set(loss_val_qs.mean()  - SharedNetwork.__loss_bufs[0])
+            SharedNetwork.__loss_diffs = SharedNetwork.__loss_diffs.at[1].set(loss_val_pi - SharedNetwork.__loss_bufs[1])
+            grad_val = jax.jit(jax.grad(SharedNetwork.__balance_loss))(SharedNetwork.__loss_balance, SharedNetwork.__loss_diffs)
+            SharedNetwork.__loss_balance = SharedNetwork.__loss_balance + 0.5 * grad_val
+        SharedNetwork.__loss_bufs = SharedNetwork.__loss_bufs.at[0].set(loss_val_qs.mean())
+        SharedNetwork.__loss_bufs = SharedNetwork.__loss_bufs.at[1].set(loss_val_pi)
         
         return self.__q_learn_cnt, self.__p_learn_cnt, loss_val_qs, loss_val_pi, loss_balance
 
