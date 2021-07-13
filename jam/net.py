@@ -110,8 +110,8 @@ class SharedNetwork:
     def decide_action(self, state):
         params = SharedNetwork.get_params(self.__opt_states)
         self.__rng, rng = jrandom.split(self.__rng)
-        action, log_pi = SharedNetwork.__action_and_log_Pi(params, state, rng, False)
-        return action
+        action, log_pi, a_mean, a_sig, o_mean, o_sig = SharedNetwork.__action_and_log_Pi(params, state, rng, False)
+        return action, a_mean, a_sig, o_mean, o_sig
     @staticmethod
     def __clip_eps(eps):
         return jnp.clip(eps, - SharedNetwork.target_clip, SharedNetwork.target_clip)
@@ -144,7 +144,7 @@ class SharedNetwork:
         log_pi = - ((accel - a_mean) ** 2) / (2 * (a_sig ** 2)) - ((omega - o_mean) ** 2) / (2 * (o_sig ** 2)) - 2.0 * 0.5 * jnp.log(2 * jnp.pi) - a_lsig - o_lsig
         log_pi = (SharedNetwork.__temperature * log_pi).reshape((batch_size, 1))
 
-        return action, log_pi
+        return action, log_pi, a_mean, a_sig, o_mean, o_sig
     @staticmethod
     def apply_Q(params, state, action, m):
         se = EnModel.q_se0 + m
@@ -181,7 +181,7 @@ class SharedNetwork:
             self.__opt_states[i] = SharedNetwork.__opt_init[i](params[i])
     @staticmethod
     def Jq(params, s, a, r, n_s, gamma, rng, learned_m):
-        n_a, log_pi = SharedNetwork.__action_and_log_Pi(params, n_s, rng, clip = True)
+        n_a, log_pi, a_mean, a_sig, o_mean, o_sig = SharedNetwork.__action_and_log_Pi(params, n_s, rng, clip = True)
         q_t = SharedNetwork.apply_Q_smaller_target(params, n_s, n_a)
         next_V = q_t - log_pi
         assert(next_V.shape == (n_s.shape[0], 1))
@@ -193,7 +193,7 @@ class SharedNetwork:
         return j_q
     @staticmethod
     def J_pi(params, state, rng):
-        action, log_pi = SharedNetwork.__action_and_log_Pi(params, state, rng, clip = False)
+        action, log_pi, a_mean, a_sig, o_mean, o_sig = SharedNetwork.__action_and_log_Pi(params, state, rng, clip = False)
         q_t = SharedNetwork.apply_Q_smaller_target(params, state, action)
         j_pi = log_pi - q_t
         return j_pi

@@ -25,7 +25,11 @@ Experience = namedtuple("Experience",
                             "action",
                             "reward",
                             "next_state",
-                            "finished"
+                            "finished",
+                            "accel_mean",
+                            "accel_sigma",
+                            "omega_mean",
+                            "omega_sigma",
                         ]
                         )
 
@@ -163,7 +167,7 @@ class Environment:
                 state = observe(self.__agents, a, self.map_h, self.map_w, self.__state_shape[1], self.__state_shape[2])
                 #make_all_state_img(self.__agents, self.map_h, self.map_w, pcpt_h = self.__state_shape[1], pcpt_w = self.__state_shape[2]).show();exit()
                 
-                action = self.__shared_nn.decide_action(state)
+                action, a_mean, a_sig, o_mean, o_sig = self.__shared_nn.decide_action(state)
                 action = action.flatten()   # single agent size
 
                 if not fin:
@@ -173,15 +177,15 @@ class Environment:
                     self.__agents[a].stop()
                     reward = 0.0
                 
-                rec.append((state, action, reward, fin))
+                rec.append((state, action, reward, fin, a_mean, a_sig, o_mean, o_sig))
             for a in range(len(self.__agents)):
                 next_state = observe(self.__agents, a, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
                 #next_action = self.__shared_nn.decide_action(next_state)
                 #next_action = next_action.flatten()   # single agent size
 
                 #self.__agents[a].reserved_action = next_action
-                state, action, reward, fin = rec[a]
-                experience = Experience(state, action.flatten(), reward, next_state, fin)
+                state, action, reward, fin, a_mean, a_sig, o_mean, o_sig = rec[a]
+                experience = Experience(state, action.flatten(), reward, next_state, fin, a_mean, a_sig, o_mean, o_sig)
                 self.__experiences.append(experience)
 
             fin_all = True
@@ -206,7 +210,7 @@ class Trainer:
         dt = 0.5
         n_ped_max = 1
         half_decay_dt = 10.0
-        init_weight_path = None#"/home/isgsktyktt/work/param.bin"
+        init_weight_path = None#"/home/isgsktyktt/work/init_param.bin"
         self.__buf_max = batch_size * batch_size
 
         self.__env = Environment(cfg, rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
@@ -246,7 +250,11 @@ class Trainer:
                         out_infos["v{}".format(agent_idx)] = float(agent.v)
                         out_infos["theta{}".format(agent_idx)] = float(agent.theta)
                         out_infos["accel{}".format(agent_idx)] = float(experience.action[0])
+                        out_infos["accel_mean{}".format(agent_idx)] = float(experience.accel_mean)
+                        out_infos["accel_sigma{}".format(agent_idx)] = float(experience.accel_sigma)
                         out_infos["omega{}".format(agent_idx)] = float(experience.action[1])
+                        out_infos["omega_mean{}".format(agent_idx)] = float(experience.omega_mean)
+                        out_infos["omega_sigma{}".format(agent_idx)] = float(experience.omega_sigma)
                         out_infos["finished{}".format(agent_idx)] = experience.finished
                         total_reward[agent_idx] += experience.reward
                         out_infos["reward{}".format(agent_idx)] = float(experience.reward)
@@ -257,8 +265,8 @@ class Trainer:
                 for t in total_reward:
                     total_rewards.append(float(t))
 
-            if len(self.__env.experiences) < self.__buf_max:
-                continue
+            #if len(self.__env.experiences) < self.__buf_max:
+            #    continue
             # after episode unit
             learn_cnt_per_unit = 0
             total_reward_mean = float(jnp.array(total_rewards).mean())
