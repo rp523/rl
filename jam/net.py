@@ -268,7 +268,8 @@ class SharedNetwork:
         loss_balance = jax.nn.softmax(SharedNetwork.__loss_balance)
 
         rng, self.__rng = jrandom.split(self.__rng)
-        self.__q_learn_cnt, self.__p_learn_cnt, self.opt_states, loss_val_qs, loss_val_pi = SharedNetwork.__update(self.__q_learn_cnt, self.__p_learn_cnt, self.__opt_states, loss_balance, s, a, r, n_s, gamma, rng)
+        self.__q_learn_cnt,     self.__p_learn_cnt, self.__opt_states, loss_val_qs, loss_val_pi = SharedNetwork.__update(
+            self.__q_learn_cnt, self.__p_learn_cnt, self.__opt_states, loss_balance, s, a, r, n_s, gamma, rng)
 
         if self.__q_learn_cnt == 1:
             SharedNetwork.__loss_diffs = SharedNetwork.__loss_diffs.at[0].set(loss_val_qs.mean())
