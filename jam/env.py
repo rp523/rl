@@ -38,7 +38,7 @@ class Environment:
         self.__rng, rng = jrandom.split(rng)
         self.__batch_size = batch_size
         self.__state_shape = (self.__batch_size, pcpt_h, pcpt_w, EnChannel.num)
-        self.__shared_nn = SharedNetwork(cfg.nn, rng, init_weight_path, self.__batch_size, pcpt_h, pcpt_w)
+        self.__shared_nn = SharedNetwork(cfg.net, rng, init_weight_path, self.__batch_size, pcpt_h, pcpt_w)
         self.__n_ped_max = n_ped_max
         self.__map_h = map_h
         self.__map_w = map_w

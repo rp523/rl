@@ -1,2 +1,4 @@
-nn:
-  temperature: 1.0
+net:
+  alpha_adjust: True
+  min_entropy: 0.0
+  
