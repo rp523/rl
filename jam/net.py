@@ -95,7 +95,7 @@ class SharedNetwork:
     @staticmethod
     def alpha_maker(output_num):
         def alpha_init_fun(rng, input_shape):
-            log_alpha = jnp.ones((1,), dtype = jnp.float32) * SharedNetwork.__cfg.init_log_alpha
+            log_alpha = jnp.ones((1,), dtype = jnp.float32) * jnp.log(SharedNetwork.__cfg.init_alpha)
             batch_size = (input_shape[0], output_num)
             return batch_size, (log_alpha,)
         def alpha_apply_fun(params, **kwargs):
