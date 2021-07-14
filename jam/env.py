@@ -14,7 +14,7 @@ import hydra
 from net import SharedNetwork
 from agent import PedestrianAgent
 from delay import DelayGen
-from common import *
+from common import EnAction, EnChannel
 from observer import observe
 from log import LogWriter
 from vis import make_all_state_img
@@ -198,7 +198,7 @@ class Environment:
             
 class Trainer:
     def __init__(self, cfg, seed):
-        self.__cfg = cfg
+        self.__cfg = cfg.train
         rng = jrandom.PRNGKey(seed)
         self.__rng, rng = jrandom.split(rng)
         batch_size = 256
@@ -211,18 +211,16 @@ class Trainer:
         n_ped_max = 1
         half_decay_dt = 10.0
         init_weight_path = None#"/home/isgsktyktt/work/init_param.bin"
-        self.__buf_max = batch_size * batch_size
 
         self.__env = Environment(cfg, rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
     def learn_episode(self, verbose = True):
-        episode_unit_num = 1000000
         episode_num_per_unit = 1
         learn_num_per_unit = 1
         
         dst_base_dir = Path("/home/isgsktyktt/work/tmp")
         log_writer = None
         all_log_writer = LogWriter(dst_base_dir.joinpath("learn.csv"))
-        for trial in range(episode_unit_num):
+        for trial in range(self.__cfg.episode_unit_num):
             total_rewards = []
             for episode in range(episode_num_per_unit):
                 log_path = dst_base_dir.joinpath("play", "{}_{}.csv".format(trial, episode))

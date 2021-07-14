@@ -1,4 +1,5 @@
 net:
   alpha_adjust: True
   min_entropy: 0.0
-  
+train:
+  episode_unit_num: 1000000
