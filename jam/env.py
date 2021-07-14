@@ -217,7 +217,7 @@ class Trainer:
         episode_num_per_unit = 1
         learn_num_per_unit = 1
         
-        dst_base_dir = Path("/home/isgsktyktt/work/tmp")
+        dst_base_dir = Path(self.__cfg.dst_dir_path)
         log_writer = None
         all_log_writer = LogWriter(dst_base_dir.joinpath("learn.csv"))
         for trial in range(self.__cfg.episode_unit_num):
