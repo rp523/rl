@@ -1,5 +1,5 @@
 net:
-  alpha_adjust: True
+  alpha_adjust: False
   min_entropy: 0.0
   init_alpha: 1.0
 train:

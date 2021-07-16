@@ -135,6 +135,7 @@ class SharedNetwork:
     def __clip_eps(eps):
         return jnp.clip(eps, - SharedNetwork.target_clip, SharedNetwork.target_clip)
     @staticmethod
+    @jax.jit
     def __action_and_log_Pi(params, state, rng, clip):
         # action
         batch_size = state.shape[0]
@@ -159,7 +160,7 @@ class SharedNetwork:
 
         action = jnp.append(accel.reshape(batch_size, 1), omega.reshape(batch_size, 1), axis = -1)
         assert(action.shape == (batch_size, EnAction.num))
-
+        
         log_pi = - ((accel - a_mean) ** 2) / (2 * (a_sig ** 2)) - ((omega - o_mean) ** 2) / (2 * (o_sig ** 2)) - 2.0 * 0.5 * jnp.log(2 * jnp.pi) - a_lsig - o_lsig
         log_pi = log_pi.reshape((batch_size, 1))
 

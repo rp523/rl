@@ -34,7 +34,7 @@ Experience = namedtuple("Experience",
                         )
 
 class Environment:
-    def __init__(self, cfg, rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max):
+    def __init__(self, cfg, rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max, buf_max):
         self.__rng, rng = jrandom.split(rng)
         self.__batch_size = batch_size
         self.__state_shape = (self.__batch_size, pcpt_h, pcpt_w, EnChannel.num)
@@ -45,7 +45,7 @@ class Environment:
         self.__max_t = max_t
         self.__dt = dt
         self.__agents = None
-        self.__experiences = deque(maxlen = batch_size ** 2)
+        self.__experiences = deque(maxlen = buf_max)
         self.__gamma = 0.99#0.5 ** (1.0 / (half_decay_dt / self.dt))
 
     @property
@@ -201,18 +201,19 @@ class Trainer:
         self.__cfg = cfg.train
         rng = jrandom.PRNGKey(seed)
         self.__rng, rng = jrandom.split(rng)
-        batch_size = 256
+        self.__batch_size = 256
         map_h = 10.0
         map_w = 10.0
         pcpt_h = 32
         pcpt_w = 32
-        max_t = 100.0
+        max_t = 128.0
         dt = 0.5
         n_ped_max = 1
         half_decay_dt = 10.0
         init_weight_path = None#"/home/isgsktyktt/work/init_param.bin"
+        self.__buf_max = self.__batch_size * self.__batch_size
 
-        self.__env = Environment(cfg, rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
+        self.__env = Environment(cfg, rng, init_weight_path, self.__batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max, self.__buf_max)
     def learn_episode(self, verbose = True):
         episode_num_per_unit = 1
         learn_num_per_unit = 1
@@ -263,8 +264,8 @@ class Trainer:
                 for t in total_reward:
                     total_rewards.append(float(t))
 
-            #if len(self.__env.experiences) < self.__buf_max:
-            #    continue
+            if len(self.__env.experiences) < self.__batch_size:
+                continue
             # after episode unit
             learn_cnt_per_unit = 0
             total_reward_mean = float(jnp.array(total_rewards).mean())
@@ -314,7 +315,7 @@ class Trainer:
                         total_loss_pi.append(loss_val_pi)
                         val = 0
                         learn_cnt_per_unit += 1
-                        if (learn_cnt_per_unit >= learn_num_per_unit):
+                        if (learn_cnt_per_unit >= min(learn_num_per_unit, len(self.__env.experiences) // self.__batch_size)):
                             break
             weight_path = dst_base_dir.joinpath("weight", "param{}.bin".format(trial))
             if not weight_path.parent.exists():
