@@ -140,6 +140,8 @@ class SharedNetwork:
         # action
         batch_size = state.shape[0]
         a_mean, a_lsig, o_mean, o_lsig = SharedNetwork.apply_Pi(params, state)
+        a_lsig = jnp.log(jax.nn.sigmoid(a_lsig))
+        o_lsig = jnp.log(jax.nn.sigmoid(o_lsig))
         assert(a_mean.shape == (batch_size,))
         assert(a_lsig.shape == (batch_size,))
         assert(o_mean.shape == (batch_size,))
@@ -183,9 +185,9 @@ class SharedNetwork:
         return nn_out
 
     @staticmethod
-    def apply_Q_smaller_target(params, state, action):
-        q0_t = SharedNetwork.apply_Q(params, state, action, 0 + 2)
-        q1_t = SharedNetwork.apply_Q(params, state, action, 1 + 2)
+    def apply_Q_smaller(params, state, action, target):
+        q0_t = SharedNetwork.apply_Q(params, state, action, 0 + 2 * int(target))
+        q1_t = SharedNetwork.apply_Q(params, state, action, 1 + 2 * int(target))
         q_t = jnp.append(q0_t, q1_t, axis = 1).min(axis = 1, keepdims = True)
         assert(q_t.shape == (state.shape[0], 1))
         return q_t
@@ -200,22 +202,22 @@ class SharedNetwork:
         for i in range(EnModel.num):
             self.__opt_states[i] = SharedNetwork.__opt_init[i](params[i])
     @staticmethod
-    def Jq(params, s, a, r, n_s, gamma, rng, learned_m):
+    def Jq(params, s, a, r, n_s, n_fin, gamma, rng, learned_m):
         n_a, log_pi, a_mean, a_sig, o_mean, o_sig = SharedNetwork.__action_and_log_Pi(params, n_s, rng, clip = True)
-        q_t = SharedNetwork.apply_Q_smaller_target(params, n_s, n_a)
+        q_t = SharedNetwork.apply_Q_smaller(params, n_s, n_a, True)
         alpha = SharedNetwork.__apply_fun[EnModel.alpha](params[EnModel.alpha])
         next_V = q_t - alpha * log_pi
         assert(next_V.shape == (n_s.shape[0], 1))
         r = r.reshape((-1 ,1))
         q = SharedNetwork.apply_Q(params, s, a, learned_m)
-        td = q - (r + gamma * next_V)
+        td = q - (r + (1.0 - n_fin) * gamma * next_V)
         j_q = 0.5 * (td ** 2)
         assert(j_q.size == s.shape[0])
         return j_q
     @staticmethod
     def J_pi(params, state, rng):
         action, log_pi, a_mean, a_sig, o_mean, o_sig = SharedNetwork.__action_and_log_Pi(params, state, rng, clip = False)
-        q_t = SharedNetwork.apply_Q_smaller_target(params, state, action)
+        q_t = SharedNetwork.apply_Q_smaller(params, state, action, False)
         alpha = SharedNetwork.__apply_fun[EnModel.alpha](params[EnModel.alpha])
         j_pi = alpha * log_pi - q_t
         return j_pi
@@ -227,8 +229,8 @@ class SharedNetwork:
         #    loss += 1E-5 * net_maker.weight_decay(param)
         return loss
     @staticmethod
-    def __q_loss(params, s, a, r, n_s, gamma, rng, learned_m):
-        j_q = SharedNetwork.Jq(params, s, a, r, n_s, gamma, rng, learned_m)
+    def __q_loss(params, s, a, r, n_s, n_fin, gamma, rng, learned_m):
+        j_q = SharedNetwork.Jq(params, s, a, r, n_s, n_fin, gamma, rng, learned_m)
         loss = jnp.mean(j_q)
         #for param in params:
         #    loss += 1E-5 * net_maker.weight_decay(param)
@@ -272,14 +274,14 @@ class SharedNetwork:
         return loss
     @staticmethod
     @jax.jit
-    def __update(q_idx, p_idx, _opt_states, loss_balance, s, a, r, n_s, gamma, rng):
+    def __update(q_idx, p_idx, _opt_states, loss_balance, s, a, r, n_s, n_fin, gamma, rng):
         rng_q0, rng_q1, rng_p, rng_a = jrandom.split(rng, 4)
         rng_qs = (rng_q0, rng_q1)
         params = SharedNetwork.get_params(_opt_states)
         
         q_loss_vals = []
         for m in range(2):
-            q_loss_val, q_grad_val = jax.value_and_grad(SharedNetwork.__q_loss)(params, s, a, r, n_s, gamma, rng_qs[m], m)
+            q_loss_val, q_grad_val = jax.value_and_grad(SharedNetwork.__q_loss)(params, s, a, r, n_s, n_fin, gamma, rng_qs[m], m)
             q_grad_val = net_maker.recursive_scaling(q_grad_val, loss_balance[0])
             for i in [  EnModel.q_se0,
                         EnModel.q_ae0,
@@ -304,12 +306,12 @@ class SharedNetwork:
         _opt_states = jax.lax.cond((q_idx % 1 == 0), SharedNetwork.__update_target, lambda x:x, _opt_states)
 
         return q_idx, p_idx, _opt_states, jnp.array(q_loss_vals), pi_loss_val
-    def update(self, gamma, s, a, r, n_s):
+    def update(self, gamma, s, a, r, n_s, n_fin):
         loss_balance = jax.nn.softmax(SharedNetwork.__loss_balance)
 
         rng, self.__rng = jrandom.split(self.__rng)
         self.__q_learn_cnt,     self.__p_learn_cnt, self.__opt_states, loss_val_qs, loss_val_pi = SharedNetwork.__update(
-            self.__q_learn_cnt, self.__p_learn_cnt, self.__opt_states, loss_balance, s, a, r, n_s, gamma, rng)
+            self.__q_learn_cnt, self.__p_learn_cnt, self.__opt_states, loss_balance, s, a, r, n_s, n_fin, gamma, rng)
 
         if self.__q_learn_cnt > 1:
             SharedNetwork.__loss_diffs = SharedNetwork.__loss_diffs.at[0].set(loss_val_qs.mean()  - SharedNetwork.__loss_bufs[0])

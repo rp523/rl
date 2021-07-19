@@ -26,6 +26,7 @@ Experience = namedtuple("Experience",
                             "reward",
                             "next_state",
                             "finished",
+                            "next_finished",
                             "accel_mean",
                             "accel_sigma",
                             "omega_mean",
@@ -137,11 +138,10 @@ class Environment:
     
     def __calc_reward(self, agent_idx):
         reward = 0.0
-        max_step = int(self.max_t / self.dt)
         own = self.__agents[agent_idx]
 
         # delay punishment
-        reward += (- 0.1) / max_step#self.__delay_reward()
+        reward += (- 0.1) * (1.0 - self.__gamma)#self.__delay_reward()
         # hit
         other_agents = self.__agents[:agent_idx] + self.__agents[agent_idx + 1:]
         assert(len(other_agents) == len(self.__agents) - 1)
@@ -153,14 +153,15 @@ class Environment:
         remain_distance = jnp.sqrt((own.y - own.tgt_y) ** 2 + (own.x - own.tgt_x) ** 2)
         max_distance = jnp.sqrt(self.__map_h ** 2 + self.__map_w ** 2)
         approach_rate = (max_distance - remain_distance) / max_distance
-        reward += (+ 0.5) * approach_rate / max_step
+        reward += (+ 0.1) * approach_rate * (1.0 - self.__gamma)
         # reach
         if own.reached_goal():
-            reward += 0.5
+            reward += 1.0
         return reward
     
     def evolve(self):
-        for _ in range(int(self.max_t / self.dt)):
+        #for _ in range(int(self.max_t / self.dt)):
+        while True:
             rec = []
             for a in range(len(self.__agents)):
                 fin = self.__agents[a].reached_goal()
@@ -180,12 +181,11 @@ class Environment:
                 rec.append((state, action, reward, fin, a_mean, a_sig, o_mean, o_sig))
             for a in range(len(self.__agents)):
                 next_state = observe(self.__agents, a, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
-                #next_action = self.__shared_nn.decide_action(next_state)
-                #next_action = next_action.flatten()   # single agent size
+                next_fin = self.__agents[a].reached_goal()
 
                 #self.__agents[a].reserved_action = next_action
                 state, action, reward, fin, a_mean, a_sig, o_mean, o_sig = rec[a]
-                experience = Experience(state, action.flatten(), reward, next_state, fin, a_mean, a_sig, o_mean, o_sig)
+                experience = Experience(state, action.flatten(), reward, next_state, fin, next_fin, a_mean, a_sig, o_mean, o_sig)
                 self.__experiences.append(experience)
 
             fin_all = True
@@ -274,6 +274,7 @@ class Trainer:
             a = jnp.zeros((state_shape[0], EnAction.num), dtype = jnp.float32)
             r = jnp.zeros((state_shape[0], 1), dtype = jnp.float32)
             n_s = jnp.zeros(state_shape, dtype = jnp.float32)
+            n_fin = jnp.zeros((state_shape[0], 1), dtype = jnp.float32)
             gamma = self.__env.gamma
             val = 0
             total_loss_q = []
@@ -287,9 +288,10 @@ class Trainer:
                     a = a.at[val,:].set(e.action)
                     r = r.at[val].set(e.reward.flatten())
                     n_s = n_s.at[val,:].set(e.next_state[0])
+                    n_fin = n_fin.at[val,:].set(float(e.next_finished))
                     val += 1
                     if val >= state_shape[0]:
-                        q_learn_cnt, p_learn_cnt, temperature, loss_val_qs, loss_val_pi, loss_balances = self.__env.shared_nn.update(gamma, s, a, r, n_s)
+                        q_learn_cnt, p_learn_cnt, temperature, loss_val_qs, loss_val_pi, loss_balances = self.__env.shared_nn.update(gamma, s, a, r, n_s, n_fin)
                         all_info = {}
                         all_info["trial"] = int(trial)
                         all_info["episode_num_per_unit"] = int(episode_num_per_unit)
