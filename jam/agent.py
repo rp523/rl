@@ -137,9 +137,9 @@ class ObjectBase:
         new_v = self.calc_new_v(accel)
 
         self.theta = new_theta
-        self.y = new_y
-        self.x = new_x
         if (new_y > y_min) and (new_y < y_max) and (new_x > x_min) and (new_x < x_max) and (not fin):
+            self.y = new_y
+            self.x = new_x
             self.v = new_v
         else:
             self.stop()
