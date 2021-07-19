@@ -133,7 +133,7 @@ class Environment:
         y_max = self.map_h - agent.radius_m
         x_min = agent.radius_m
         x_max = self.map_w - agent.radius_m
-        agent.step_evolve(accel, omega, y_min, y_max, x_min, x_max, agent.reached_goal())
+        agent.step_evolve(accel, omega, y_min, y_max, x_min, x_max, agent.reached_goal() or agent.hit_with_wall(self.map_h, self.map_w))
         return agent
     
     def __calc_reward(self, agent_idx):
@@ -156,7 +156,10 @@ class Environment:
         reward += (+ 0.1) * approach_rate * (1.0 - self.__gamma)
         # reach
         if own.reached_goal():
-            reward += 1.0
+            reward += 0.2
+        # reach
+        #if own.hit_with_wall(self.map_h, self.map_w):
+        #    reward += (-1.0)
         return reward
     
     def evolve(self):
@@ -164,9 +167,9 @@ class Environment:
         while True:
             rec = []
             for a in range(len(self.__agents)):
-                fin = self.__agents[a].reached_goal()
+                fin = self.__agents[a].reached_goal() or self.__agents[a].hit_with_wall(self.map_h, self.map_w)
                 state = observe(self.__agents, a, self.map_h, self.map_w, self.__state_shape[1], self.__state_shape[2])
-                #make_all_state_img(self.__agents, self.map_h, self.map_w, pcpt_h = self.__state_shape[1], pcpt_w = self.__state_shape[2]).show();exit()
+                #make_all_state_img(self.__agents, self.map_h, self.map_w, pcpt_h = self.__state_shape[1], pcpt_w = self.__state_shape[2]).save("/home/isgsktyktt/work/im.png");exit()
                 
                 action, a_mean, a_sig, o_mean, o_sig = self.__shared_nn.decide_action(state)
                 action = action.flatten()   # single agent size
@@ -181,7 +184,7 @@ class Environment:
                 rec.append((state, action, reward, fin, a_mean, a_sig, o_mean, o_sig))
             for a in range(len(self.__agents)):
                 next_state = observe(self.__agents, a, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
-                next_fin = self.__agents[a].reached_goal()
+                next_fin = self.__agents[a].reached_goal() or self.__agents[a].hit_with_wall(self.map_h, self.map_w)
 
                 #self.__agents[a].reserved_action = next_action
                 state, action, reward, fin, a_mean, a_sig, o_mean, o_sig = rec[a]
@@ -190,7 +193,7 @@ class Environment:
 
             fin_all = True
             for a in range(len(self.__agents)):
-                fin_all &= self.__agents[a].reached_goal()
+                fin_all &= self.__agents[a].reached_goal() or self.__agents[a].hit_with_wall(self.map_h, self.map_w)
             yield fin_all, self.__agents
             
             if fin_all:
