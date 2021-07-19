@@ -137,9 +137,9 @@ class ObjectBase:
         new_v = self.calc_new_v(accel)
 
         self.theta = new_theta
+        self.y = new_y
+        self.x = new_x
         if (new_y > y_min) and (new_y < y_max) and (new_x > x_min) and (new_x < x_max) and (not fin):
-            self.y = new_y
-            self.x = new_x
             self.v = new_v
         else:
             self.stop()
@@ -180,6 +180,15 @@ class PedestrianAgent(Pedestrian):
         hit = False
         if  (abs(self.y - other.tgt_y) < self.radius_m) and \
             (abs(self.x - other.tgt_x) < self.radius_m):
+            hit = True
+        return hit
+    
+    def hit_with_wall(self, map_h, map_w):
+        hit = False
+        if  (abs(self.y -   0.0) < self.radius_m) or \
+            (abs(self.y - map_h) < self.radius_m) or \
+            (abs(self.x -   0.0) < self.radius_m) or \
+            (abs(self.x - map_w) < self.radius_m):
             hit = True
         return hit
 
