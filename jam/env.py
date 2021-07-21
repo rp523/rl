@@ -83,8 +83,9 @@ class Environment:
         return self.__agents
 
     def __make_new_pedestrian(self, old_pedestrians):
+        _rng = jrandom.PRNGKey(123)
         while 1:
-            rng_y, rng_x, rng_theta, self.__rng = jrandom.split(self.__rng, 4)
+            rng_y, rng_x, rng_theta, _rng = jrandom.split(_rng, 4)
             tgt_y, y = jrandom.uniform(rng_y, (2,), minval = 0.0, maxval = self.map_h)
             tgt_x, x = jrandom.uniform(rng_x, (2,), minval = 0.0, maxval = self.map_w)
             theta = jrandom.uniform(rng_theta, (1,), minval = 0.0, maxval = 2.0 * jnp.pi)[0]
@@ -136,38 +137,47 @@ class Environment:
         agent.step_evolve(accel, omega, y_min, y_max, x_min, x_max, agent.reached_goal() or agent.hit_with_wall(self.map_h, self.map_w))
         return agent
     
-    def __calc_reward(self, agent_idx):
+    def __calc_reward(self, agent_idx, action):
         reward = 0.0
         own = self.__agents[agent_idx]
 
         # delay punishment
-        reward += (- 0.1) * (1.0 - self.__gamma)#self.__delay_reward()
+        reward = reward + (- 0.1) * (1.0 - self.__gamma)#self.__delay_reward()
+        
         # hit
-        other_agents = self.__agents[:agent_idx] + self.__agents[agent_idx + 1:]
-        assert(len(other_agents) == len(self.__agents) - 1)
-        for other_agent in other_agents:
-            break
-            if own.hit_with(other_agent):
-                reward += (-1.0)
+        #other_agents = self.__agents[:agent_idx] + self.__agents[agent_idx + 1:]
+        #assert(len(other_agents) == len(self.__agents) - 1)
+        #for other_agent in other_agents:
+        #    break
+        #    if own.hit_with(other_agent):
+        #        reward += (-1.0)
+        
         # approach
-        remain_distance = jnp.sqrt((own.y - own.tgt_y) ** 2 + (own.x - own.tgt_x) ** 2)
-        max_distance = jnp.sqrt(self.__map_h ** 2 + self.__map_w ** 2)
-        approach_rate = (max_distance - remain_distance) / max_distance
-        reward += (+ 0.1) * approach_rate * (1.0 - self.__gamma)
+        #remain_distance = jnp.sqrt((own.y - own.tgt_y) ** 2 + (own.x - own.tgt_x) ** 2)
+        #max_distance = jnp.sqrt(self.__map_h ** 2 + self.__map_w ** 2)
+        #approach_rate = (max_distance - remain_distance) / max_distance
+        #reward = reward + (+ 0.1) * approach_rate * (1.0 - self.__gamma)
+        
         # reach
         if own.reached_goal():
-            reward += 0.2
-        # reach
+            reward = reward + (+1.0)
+        
+        # hit with wall
         #if own.hit_with_wall(self.map_h, self.map_w):
         #    reward += (-1.0)
-        return reward
+
+        # punish extreme action
+        #reward = reward - 0.005 * (action * action).mean() * (1.0 - self.__gamma)
+
+        return jnp.array(reward)
     
     def evolve(self):
-        #for _ in range(int(self.max_t / self.dt)):
+        #max_step = int(self.max_t / self.dt)
+        #for step in range(max_step):
         while True:
             rec = []
             for a in range(len(self.__agents)):
-                fin = self.__agents[a].reached_goal() or self.__agents[a].hit_with_wall(self.map_h, self.map_w)
+                fin = self.__agents[a].reached_goal()# or self.__agents[a].hit_with_wall(self.map_h, self.map_w)
                 state = observe(self.__agents, a, self.map_h, self.map_w, self.__state_shape[1], self.__state_shape[2])
                 #make_all_state_img(self.__agents, self.map_h, self.map_w, pcpt_h = self.__state_shape[1], pcpt_w = self.__state_shape[2]).save("/home/isgsktyktt/work/im.png");exit()
                 
@@ -176,7 +186,7 @@ class Environment:
 
                 if not fin:
                     self.__agents[a] = self.__step_evolve(self.__agents[a], action)
-                    reward = self.__calc_reward(a)
+                    reward = self.__calc_reward(a, action)
                 else:
                     self.__agents[a].stop()
                     reward = 0.0
@@ -184,7 +194,7 @@ class Environment:
                 rec.append((state, action, reward, fin, a_mean, a_sig, o_mean, o_sig))
             for a in range(len(self.__agents)):
                 next_state = observe(self.__agents, a, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
-                next_fin = self.__agents[a].reached_goal() or self.__agents[a].hit_with_wall(self.map_h, self.map_w)
+                next_fin = self.__agents[a].reached_goal()# or self.__agents[a].hit_with_wall(self.map_h, self.map_w)
 
                 #self.__agents[a].reserved_action = next_action
                 state, action, reward, fin, a_mean, a_sig, o_mean, o_sig = rec[a]
@@ -193,7 +203,7 @@ class Environment:
 
             fin_all = True
             for a in range(len(self.__agents)):
-                fin_all &= self.__agents[a].reached_goal() or self.__agents[a].hit_with_wall(self.map_h, self.map_w)
+                fin_all &= self.__agents[a].reached_goal()# or self.__agents[a].hit_with_wall(self.map_h, self.map_w)
             yield fin_all, self.__agents
             
             if fin_all:
@@ -219,7 +229,7 @@ class Trainer:
         self.__env = Environment(cfg, rng, init_weight_path, self.__batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max, self.__buf_max)
     def learn_episode(self, verbose = True):
         episode_num_per_unit = 1
-        learn_num_per_unit = 1
+        learn_num_per_unit = 16
         
         dst_base_dir = Path(self.__cfg.dst_dir_path)
         log_writer = None
@@ -259,6 +269,7 @@ class Trainer:
                         out_infos["omega_sigma{}".format(agent_idx)] = float(experience.omega_sigma)
                         out_infos["finished{}".format(agent_idx)] = experience.finished
                         total_reward[agent_idx] += experience.reward
+                        out_infos["Q{}".format(agent_idx)] = float(self.__env.shared_nn.apply_Q_smaller(experience.state, experience.action.reshape((1, -1))))
                         out_infos["reward{}".format(agent_idx)] = float(experience.reward)
                         out_infos["total_reward{}".format(agent_idx)] = float(total_reward[agent_idx])
                     log_writer.write(out_infos)
@@ -296,18 +307,18 @@ class Trainer:
                     if val >= state_shape[0]:
                         q_learn_cnt, p_learn_cnt, temperature, loss_val_qs, loss_val_pi, loss_balances = self.__env.shared_nn.update(gamma, s, a, r, n_s, n_fin)
                         all_info = {}
+                        all_info["total_reward_mean"] = float(total_reward_mean)
                         all_info["trial"] = int(trial)
                         all_info["episode_num_per_unit"] = int(episode_num_per_unit)
                         all_info["episode"] = int(episode)
                         all_info["q_learn_cnt"] = int(q_learn_cnt)
                         #all_info["p_learn_cnt"] = int(p_learn_cnt)
                         all_info["temperature"] = float(temperature)
-                        all_info["total_reward_mean"] = float(total_reward_mean)
                         for _i, loss_val_q in enumerate(loss_val_qs):
                             all_info["loss_val_q{}".format(_i)] = float(loss_val_q)
                         all_info["loss_val_pi"] = float(loss_val_pi)
-                        for _i, loss_balance in enumerate(loss_balances):
-                            all_info["loss_balance{}".format(_i)] = float(loss_balance)
+                        #for _i, loss_balance in enumerate(loss_balances):
+                        #    all_info["loss_balance{}".format(_i)] = float(loss_balance)
                         all_log_writer.write(all_info)
                         if verbose:
                             for value in all_info.values():

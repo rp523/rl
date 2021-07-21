@@ -166,6 +166,9 @@ class SharedNetwork:
         log_pi = - ((accel - a_mean) ** 2) / (2 * (a_sig ** 2)) - ((omega - o_mean) ** 2) / (2 * (o_sig ** 2)) - 2.0 * 0.5 * jnp.log(2 * jnp.pi) - a_lsig - o_lsig
         log_pi = log_pi.reshape((batch_size, 1))
 
+        action = jnp.tanh(action)
+        log_pi = log_pi - jnp.log(1.0 - action * action).sum(axis = 1, keepdims = True)
+
         return action, log_pi, a_mean, a_sig, o_mean, o_sig
     @staticmethod
     def apply_Q(params, state, action, m):
@@ -185,12 +188,16 @@ class SharedNetwork:
         return nn_out
 
     @staticmethod
-    def apply_Q_smaller(params, state, action, target):
+    def __apply_Q_smaller(params, state, action, target):
         q0_t = SharedNetwork.apply_Q(params, state, action, 0 + 2 * int(target))
         q1_t = SharedNetwork.apply_Q(params, state, action, 1 + 2 * int(target))
         q_t = jnp.append(q0_t, q1_t, axis = 1).min(axis = 1, keepdims = True)
         assert(q_t.shape == (state.shape[0], 1))
         return q_t
+
+    def apply_Q_smaller(self, state, action):
+        params = SharedNetwork.get_params(self.__opt_states)
+        return SharedNetwork.__apply_Q_smaller(params, state, action, False)
 
     def save(self, weight_path):
         params = SharedNetwork.get_params(self.__opt_states)
@@ -204,7 +211,7 @@ class SharedNetwork:
     @staticmethod
     def Jq(params, s, a, r, n_s, n_fin, gamma, rng, learned_m):
         n_a, log_pi, a_mean, a_sig, o_mean, o_sig = SharedNetwork.__action_and_log_Pi(params, n_s, rng, clip = True)
-        q_t = SharedNetwork.apply_Q_smaller(params, n_s, n_a, True)
+        q_t = SharedNetwork.__apply_Q_smaller(params, n_s, n_a, True)
         alpha = SharedNetwork.__apply_fun[EnModel.alpha](params[EnModel.alpha])
         next_V = q_t - alpha * log_pi
         assert(next_V.shape == (n_s.shape[0], 1))
@@ -217,7 +224,7 @@ class SharedNetwork:
     @staticmethod
     def J_pi(params, state, rng):
         action, log_pi, a_mean, a_sig, o_mean, o_sig = SharedNetwork.__action_and_log_Pi(params, state, rng, clip = False)
-        q_t = SharedNetwork.apply_Q_smaller(params, state, action, False)
+        q_t = SharedNetwork.__apply_Q_smaller(params, state, action, False)
         alpha = SharedNetwork.__apply_fun[EnModel.alpha](params[EnModel.alpha])
         j_pi = alpha * log_pi - q_t
         return j_pi
@@ -323,15 +330,17 @@ class SharedNetwork:
         
         params = SharedNetwork.get_params(self.__opt_states)
         alpha = SharedNetwork.__apply_fun[EnModel.alpha](params[EnModel.alpha])
+        #self.__opt_states[EnModel.alpha] = SharedNetwork.__opt_init[EnModel.alpha]((jnp.log(max(float(alpha) - 0.000005, 0.001)),))
 
         return self.__q_learn_cnt, self.__p_learn_cnt, alpha, loss_val_qs, loss_val_pi, loss_balance
 
     @staticmethod
     def state_encoder(output_num):
-        return serial(  Conv(4, (3, 3), (1, 1), "SAME"), Tanh, BatchNorm(),
-                        Conv(4, (3, 3), (1, 1), "SAME"), Tanh, BatchNorm(),
-                        Conv(4, (3, 3), (1, 1), "SAME"), Tanh, BatchNorm(),
+        return serial(  Conv(4, (3, 3), (1, 1), "SAME"), Tanh,# BatchNorm(),
+                        Conv(4, (3, 3), (1, 1), "SAME"), Tanh,# BatchNorm(),
+                        Conv(4, (3, 3), (1, 1), "SAME"), Tanh,# BatchNorm(),
                         Flatten,
+                        Dense(128), Tanh,# BatchNormつけるとなぜか出力が固定値になる,
                         Dense(output_num)
         )
     @staticmethod
