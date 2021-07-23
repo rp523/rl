@@ -167,7 +167,7 @@ class SharedNetwork:
         log_pi = log_pi.reshape((batch_size, 1))
 
         action = jnp.tanh(action)
-        log_pi = log_pi - jnp.log(1.0 - action * action).sum(axis = 1, keepdims = True)
+        log_pi = log_pi - jnp.log((1.0 - action * action) + 1E-5).sum(axis = 1, keepdims = True)
 
         return action, log_pi, a_mean, a_sig, o_mean, o_sig
     @staticmethod
@@ -238,7 +238,10 @@ class SharedNetwork:
     @staticmethod
     def __q_loss(params, s, a, r, n_s, n_fin, gamma, rng, learned_m):
         j_q = SharedNetwork.Jq(params, s, a, r, n_s, n_fin, gamma, rng, learned_m)
-        loss = jnp.mean(j_q)
+        j_q_max = j_q.max()
+        j_q_exp = jnp.exp(j_q - j_q_max)
+        j_q_w = j_q_exp / j_q_exp.sum()
+        loss = jnp.sum(j_q * j_q_w)
         #for param in params:
         #    loss += 1E-5 * net_maker.weight_decay(param)
         return loss

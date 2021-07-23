@@ -47,7 +47,7 @@ class Environment:
         self.__dt = dt
         self.__agents = None
         self.__experiences = deque(maxlen = buf_max)
-        self.__gamma = 0.99#0.5 ** (1.0 / (half_decay_dt / self.dt))
+        self.__gamma = 0.999#0.5 ** (1.0 / (half_decay_dt / self.dt))
 
     @property
     def n_ped_max(self):
@@ -142,7 +142,7 @@ class Environment:
         own = self.__agents[agent_idx]
 
         # delay punishment
-        reward = reward + (- 0.1) * (1.0 - self.__gamma)#self.__delay_reward()
+        reward = reward + (- 0.01)# * (1.0 - self.__gamma)#self.__delay_reward()
         
         # hit
         #other_agents = self.__agents[:agent_idx] + self.__agents[agent_idx + 1:]
@@ -153,10 +153,10 @@ class Environment:
         #        reward += (-1.0)
         
         # approach
-        #remain_distance = jnp.sqrt((own.y - own.tgt_y) ** 2 + (own.x - own.tgt_x) ** 2)
-        #max_distance = jnp.sqrt(self.__map_h ** 2 + self.__map_w ** 2)
-        #approach_rate = (max_distance - remain_distance) / max_distance
-        #reward = reward + (+ 0.1) * approach_rate * (1.0 - self.__gamma)
+        remain_distance = jnp.sqrt((own.y - own.tgt_y) ** 2 + (own.x - own.tgt_x) ** 2)
+        max_distance = jnp.sqrt(self.__map_h ** 2 + self.__map_w ** 2)
+        remain_rate = remain_distance / max_distance
+        reward = reward + (- 0.1) * remain_rate
         
         # reach
         if own.reached_goal():
@@ -220,7 +220,7 @@ class Trainer:
         pcpt_h = 32
         pcpt_w = 32
         max_t = 128.0
-        dt = 0.5
+        dt = 0.5 * 4
         n_ped_max = 1
         half_decay_dt = 10.0
         init_weight_path = None#"/home/isgsktyktt/work/init_param.bin"
