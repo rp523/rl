@@ -53,7 +53,7 @@ class SharedNetwork:
         self.__opt_states          = [None] * EnModel.num
         q_lr = 1E-3
         p_lr = 1E-3
-        a_lr = 1E-3
+        a_lr = 5E-4
 
         SharedNetwork.target_clip = 1.0 / jnp.sqrt(10)
         for i, nn, input_shape, output_num, rng, lr in [
@@ -231,15 +231,20 @@ class SharedNetwork:
     @staticmethod
     def __pi_loss(params, s, rng):
         j_pi = SharedNetwork.J_pi(params, s, rng)
-        loss = jnp.mean(j_pi)
+        alpha = SharedNetwork.__apply_fun[EnModel.alpha](params[EnModel.alpha])
+        j_pi_max = j_pi.max()
+        j_pi_exp = jnp.exp((j_pi - j_pi_max) / alpha)
+        j_pi_w = j_pi_exp / j_pi_exp.sum()
+        loss = jnp.sum(j_pi * j_pi_w)
         #for param in params:
         #    loss += 1E-5 * net_maker.weight_decay(param)
         return loss
     @staticmethod
     def __q_loss(params, s, a, r, n_s, n_fin, gamma, rng, learned_m):
         j_q = SharedNetwork.Jq(params, s, a, r, n_s, n_fin, gamma, rng, learned_m)
+        alpha = SharedNetwork.__apply_fun[EnModel.alpha](params[EnModel.alpha])
         j_q_max = j_q.max()
-        j_q_exp = jnp.exp(j_q - j_q_max)
+        j_q_exp = jnp.exp((j_q - j_q_max) / alpha)
         j_q_w = j_q_exp / j_q_exp.sum()
         loss = jnp.sum(j_q * j_q_w)
         #for param in params:

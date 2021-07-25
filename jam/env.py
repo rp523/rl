@@ -47,7 +47,7 @@ class Environment:
         self.__dt = dt
         self.__agents = None
         self.__experiences = deque(maxlen = buf_max)
-        self.__gamma = 0.999#0.5 ** (1.0 / (half_decay_dt / self.dt))
+        self.__gamma = 0.9999#0.5 ** (1.0 / (half_decay_dt / self.dt))
 
     @property
     def n_ped_max(self):
@@ -175,6 +175,8 @@ class Environment:
         #max_step = int(self.max_t / self.dt)
         #for step in range(max_step):
         while True:
+
+            # play
             rec = []
             for a in range(len(self.__agents)):
                 fin = self.__agents[a].reached_goal()# or self.__agents[a].hit_with_wall(self.map_h, self.map_w)
@@ -184,20 +186,21 @@ class Environment:
                 action, a_mean, a_sig, o_mean, o_sig = self.__shared_nn.decide_action(state)
                 action = action.flatten()   # single agent size
 
+                # state transition
                 if not fin:
                     self.__agents[a] = self.__step_evolve(self.__agents[a], action)
-                    reward = self.__calc_reward(a, action)
                 else:
                     self.__agents[a].stop()
-                    reward = 0.0
                 
-                rec.append((state, action, reward, fin, a_mean, a_sig, o_mean, o_sig))
+                rec.append((state, action, fin, a_mean, a_sig, o_mean, o_sig))
+            
+            # evaluation
             for a in range(len(self.__agents)):
+                state, action, fin, a_mean, a_sig, o_mean, o_sig = rec[a]
                 next_state = observe(self.__agents, a, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
+                reward = self.__calc_reward(a, action)
                 next_fin = self.__agents[a].reached_goal()# or self.__agents[a].hit_with_wall(self.map_h, self.map_w)
 
-                #self.__agents[a].reserved_action = next_action
-                state, action, reward, fin, a_mean, a_sig, o_mean, o_sig = rec[a]
                 experience = Experience(state, action.flatten(), reward, next_state, fin, next_fin, a_mean, a_sig, o_mean, o_sig)
                 self.__experiences.append(experience)
 
@@ -224,7 +227,7 @@ class Trainer:
         n_ped_max = 1
         half_decay_dt = 10.0
         init_weight_path = None#"/home/isgsktyktt/work/init_param.bin"
-        self.__buf_max = self.__batch_size * self.__batch_size
+        self.__buf_max = int(1E5)#self.__batch_size * self.__batch_size
 
         self.__env = Environment(cfg, rng, init_weight_path, self.__batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max, self.__buf_max)
     def learn_episode(self, verbose = True):
