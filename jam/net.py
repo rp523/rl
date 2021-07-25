@@ -53,7 +53,7 @@ class SharedNetwork:
         self.__opt_states          = [None] * EnModel.num
         q_lr = 1E-3
         p_lr = 1E-3
-        a_lr = 5E-4
+        a_lr = 1E-3
 
         SharedNetwork.target_clip = 1.0 / jnp.sqrt(10)
         for i, nn, input_shape, output_num, rng, lr in [
