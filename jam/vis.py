@@ -104,7 +104,7 @@ def main(org_draw_cnt):
         
         if (fig is None) and (axs is None):
             plt.clf()
-            fig, axs = plt.subplots(8, max(2, len(csv_path_list)),
+            fig, axs = plt.subplots(5, max(2, len(csv_path_list)),
                 figsize=(12.0, 8.0)
             )
 
@@ -141,6 +141,7 @@ def main(org_draw_cnt):
         #axs[row, idx].set_ylim(-10, 1)
         row += 1
 
+        '''
         x = []
         y = []
         for t in trials:
@@ -159,6 +160,7 @@ def main(org_draw_cnt):
         axs[row, idx].grid(True)
         #axs[row, idx].set_yscale("log")
         row += 1
+        '''
 
         x = df["q_learn_cnt"]
         l = df["temperature"]
@@ -181,11 +183,11 @@ def main(org_draw_cnt):
             axs[row, idx].grid(True)
             #axs[row, idx].set_yscale("log")
             #axs[row, idx].set_ylim(0.75, 1.0)
-            row += 1
+        row += 1
 
         x = df["q_learn_cnt"]
         l = df["loss_val_pi"]
-        pi_min_idx = 10
+        pi_min_idx = 0
         axs[row, idx].plot(x[pi_min_idx:], l[pi_min_idx:], ".", markersize = markersize)#, label = "Pi-Loss")
         axs[row, idx].grid(True)
         #axs[row, idx].set_title("pi-loss")
@@ -197,7 +199,7 @@ def main(org_draw_cnt):
             axs[row, idx].plot(x, l, ".", markersize = markersize)#, label = "Q-Loss{}".format(i))
             axs[row, idx].grid(True)
             axs[row, idx].set_yscale("log")
-            row += 1
+        row += 1
         
     #plt.show();exit()
     plt.savefig(csv_dir_path.joinpath("now.png"))
