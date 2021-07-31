@@ -152,7 +152,7 @@ class Pedestrian(ObjectBase):
         a_max = v_max / 1.0
         super().__init__(y, x, theta, dt, v_max, a_max)
 
-class PedestrianAgent(Pedestrian):
+class PedestrianObject(Pedestrian):
     def __init__(self, tgt_y, tgt_x, y, x, theta, dt):
         super().__init__(y, x, theta, dt)
         self.__tgt_y = tgt_y

@@ -12,7 +12,7 @@ import subprocess
 import hydra
 
 from net import SharedNetwork
-from agent import PedestrianAgent
+from objects import PedestrianObject
 from delay import DelayGen
 from common import EnAction, EnChannel
 from observer import observe
@@ -45,7 +45,7 @@ class Environment:
         self.__map_w = map_w
         self.__max_t = max_t
         self.__dt = dt
-        self.__agents = None
+        self.__objects = None
         self.__experiences = deque(maxlen = buf_max)
         self.__gamma = 0.9999#0.5 ** (1.0 / (half_decay_dt / self.dt))
 
@@ -79,8 +79,8 @@ class Environment:
     @property
     def state_shape(self):
         return self.__state_shape
-    def get_agents(self):
-        return self.__agents
+    def get_objects(self):
+        return self.__objects
 
     def __make_new_pedestrian(self, old_pedestrians):
         _rng = jrandom.PRNGKey(123)
@@ -89,7 +89,7 @@ class Environment:
             tgt_y, y = jrandom.uniform(rng_y, (2,), minval = 0.0, maxval = self.map_h)
             tgt_x, x = jrandom.uniform(rng_x, (2,), minval = 0.0, maxval = self.map_w)
             theta = jrandom.uniform(rng_theta, (1,), minval = 0.0, maxval = 2.0 * jnp.pi)[0]
-            new_ped = PedestrianAgent(tgt_y, tgt_x, y, x, theta, self.dt)
+            new_ped = PedestrianObject(tgt_y, tgt_x, y, x, theta, self.dt)
 
             isolated = True
             if  (new_ped.y >        0.0 + new_ped.radius_m) and \
@@ -118,38 +118,38 @@ class Environment:
         _rng, self.__rng = jrandom.split(self.__rng, 2)
         n_ped = jrandom.randint(_rng, (1,), 1, self.n_ped_max + 1)
 
-        agents = []
+        objects = []
         for _ in range(int(n_ped)):
-            new_ped = self.__make_new_pedestrian(agents)
-            agents.append(new_ped)
+            new_ped = self.__make_new_pedestrian(objects)
+            objects.append(new_ped)
 
-        return agents
+        return objects
 
     def reset(self):
-        self.__agents = self.__make_init_state()
+        self.__objects = self.__make_init_state()
 
-    def __step_evolve(self, agent, action):
+    def __step_evolve(self, object, action):
         accel, omega = action
-        y_min = agent.radius_m
-        y_max = self.map_h - agent.radius_m
-        x_min = agent.radius_m
-        x_max = self.map_w - agent.radius_m
-        agent.step_evolve(accel, omega, y_min, y_max, x_min, x_max, agent.reached_goal() or agent.hit_with_wall(self.map_h, self.map_w))
-        return agent
+        y_min = object.radius_m
+        y_max = self.map_h - object.radius_m
+        x_min = object.radius_m
+        x_max = self.map_w - object.radius_m
+        object.step_evolve(accel, omega, y_min, y_max, x_min, x_max, object.reached_goal() or object.hit_with_wall(self.map_h, self.map_w))
+        return object
     
-    def __calc_reward(self, agent_idx, action):
+    def __calc_reward(self, obj_idx, action):
         reward = 0.0
-        own = self.__agents[agent_idx]
+        own = self.__objects[obj_idx]
 
         # delay punishment
         reward = reward + (- 0.01)# * (1.0 - self.__gamma)#self.__delay_reward()
         
         # hit
-        #other_agents = self.__agents[:agent_idx] + self.__agents[agent_idx + 1:]
-        #assert(len(other_agents) == len(self.__agents) - 1)
-        #for other_agent in other_agents:
+        #other_objects = self.__objects[:obj_idx] + self.__objects[obj_idx + 1:]
+        #assert(len(other_objects) == len(self.__objects) - 1)
+        #for other_object in other_objects:
         #    break
-        #    if own.hit_with(other_agent):
+        #    if own.hit_with(other_object):
         #        reward += (-1.0)
         
         # approach
@@ -178,36 +178,36 @@ class Environment:
 
             # play
             rec = []
-            for a in range(len(self.__agents)):
-                fin = self.__agents[a].reached_goal()# or self.__agents[a].hit_with_wall(self.map_h, self.map_w)
-                state = observe(self.__agents, a, self.map_h, self.map_w, self.__state_shape[1], self.__state_shape[2])
-                #make_all_state_img(self.__agents, self.map_h, self.map_w, pcpt_h = self.__state_shape[1], pcpt_w = self.__state_shape[2]).save("/home/isgsktyktt/work/im.png");exit()
+            for obj_idx in range(len(self.__objects)):
+                fin = self.__objects[obj_idx].reached_goal()# or self.__objects[a].hit_with_wall(self.map_h, self.map_w)
+                state = observe(self.__objects, obj_idx, self.map_h, self.map_w, self.__state_shape[1], self.__state_shape[2])
+                #make_all_state_img(self.__objects, self.map_h, self.map_w, pcpt_h = self.__state_shape[1], pcpt_w = self.__state_shape[2]).save("/home/isgsktyktt/work/im.png");exit()
                 
                 action, a_mean, a_sig, o_mean, o_sig = self.__shared_nn.decide_action(state)
-                action = action.flatten()   # single agent size
+                action = action.flatten()   # single object size
 
                 # state transition
                 if not fin:
-                    self.__agents[a] = self.__step_evolve(self.__agents[a], action)
+                    self.__objects[obj_idx] = self.__step_evolve(self.__objects[obj_idx], action)
                 else:
-                    self.__agents[a].stop()
+                    self.__objects[obj_idx].stop()
                 
                 rec.append((state, action, fin, a_mean, a_sig, o_mean, o_sig))
             
             # evaluation
-            for a in range(len(self.__agents)):
-                state, action, fin, a_mean, a_sig, o_mean, o_sig = rec[a]
-                next_state = observe(self.__agents, a, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
-                reward = self.__calc_reward(a, action)
-                next_fin = self.__agents[a].reached_goal()# or self.__agents[a].hit_with_wall(self.map_h, self.map_w)
+            for obj_idx in range(len(self.__objects)):
+                state, action, fin, a_mean, a_sig, o_mean, o_sig = rec[obj_idx]
+                next_state = observe(self.__objects, obj_idx, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
+                reward = self.__calc_reward(obj_idx, action)
+                next_fin = self.__objects[obj_idx].reached_goal()# or self.__objects[a].hit_with_wall(self.map_h, self.map_w)
 
                 experience = Experience(state, action.flatten(), reward, next_state, fin, next_fin, a_mean, a_sig, o_mean, o_sig)
                 self.__experiences.append(experience)
 
             fin_all = True
-            for a in range(len(self.__agents)):
-                fin_all &= self.__agents[a].reached_goal()# or self.__agents[a].hit_with_wall(self.map_h, self.map_w)
-            yield fin_all, self.__agents
+            for obj_idx in range(len(self.__objects)):
+                fin_all &= self.__objects[obj_idx].reached_goal()# or self.__objects[a].hit_with_wall(self.map_h, self.map_w)
+            yield fin_all, self.__objects
             
             if fin_all:
                 break
@@ -246,35 +246,35 @@ class Trainer:
                 log_writer = LogWriter(log_path)
                 self.__env.reset()
             
-                total_reward = [0.0] * len(self.__env.get_agents())
+                total_reward = [0.0] * len(self.__env.get_objects())
                 if verbose:
                     loop_fun = tqdm
                 else:
                     loop_fun = lambda x : x
-                for step, (fin_all, agents) in loop_fun(enumerate(self.__env.evolve())):
+                for step, (fin_all, objects) in loop_fun(enumerate(self.__env.evolve())):
                     out_infos = {}
                     out_infos["episode"] = episode
                     out_infos["step"] = step
                     out_infos["t"] = step * self.__env.dt
-                    for agent_idx, agent in enumerate(agents):
-                        experience = self.__env.experiences[-len(agents) + agent_idx]
-                        out_infos["tgt_y{}".format(agent_idx)] = float(agent.tgt_y)
-                        out_infos["tgt_x{}".format(agent_idx)] = float(agent.tgt_x)
-                        out_infos["y{}".format(agent_idx)] = float(agent.y)
-                        out_infos["x{}".format(agent_idx)] = float(agent.x)
-                        out_infos["v{}".format(agent_idx)] = float(agent.v)
-                        out_infos["theta{}".format(agent_idx)] = float(agent.theta)
-                        out_infos["accel{}".format(agent_idx)] = float(experience.action[0])
-                        out_infos["accel_mean{}".format(agent_idx)] = float(experience.accel_mean)
-                        out_infos["accel_sigma{}".format(agent_idx)] = float(experience.accel_sigma)
-                        out_infos["omega{}".format(agent_idx)] = float(experience.action[1])
-                        out_infos["omega_mean{}".format(agent_idx)] = float(experience.omega_mean)
-                        out_infos["omega_sigma{}".format(agent_idx)] = float(experience.omega_sigma)
-                        out_infos["finished{}".format(agent_idx)] = experience.finished
-                        total_reward[agent_idx] += experience.reward
-                        out_infos["Q{}".format(agent_idx)] = float(self.__env.shared_nn.apply_Q_smaller(experience.state, experience.action.reshape((1, -1))))
-                        out_infos["reward{}".format(agent_idx)] = float(experience.reward)
-                        out_infos["total_reward{}".format(agent_idx)] = float(total_reward[agent_idx])
+                    for obj_idx, object in enumerate(objects):
+                        experience = self.__env.experiences[-len(objects) + obj_idx]
+                        out_infos["tgt_y{}".format(obj_idx)] = float(object.tgt_y)
+                        out_infos["tgt_x{}".format(obj_idx)] = float(object.tgt_x)
+                        out_infos["y{}".format(obj_idx)] = float(object.y)
+                        out_infos["x{}".format(obj_idx)] = float(object.x)
+                        out_infos["v{}".format(obj_idx)] = float(object.v)
+                        out_infos["theta{}".format(obj_idx)] = float(object.theta)
+                        out_infos["accel{}".format(obj_idx)] = float(experience.action[0])
+                        out_infos["accel_mean{}".format(obj_idx)] = float(experience.accel_mean)
+                        out_infos["accel_sigma{}".format(obj_idx)] = float(experience.accel_sigma)
+                        out_infos["omega{}".format(obj_idx)] = float(experience.action[1])
+                        out_infos["omega_mean{}".format(obj_idx)] = float(experience.omega_mean)
+                        out_infos["omega_sigma{}".format(obj_idx)] = float(experience.omega_sigma)
+                        out_infos["finished{}".format(obj_idx)] = experience.finished
+                        total_reward[obj_idx] += experience.reward
+                        out_infos["Q{}".format(obj_idx)] = float(self.__env.shared_nn.apply_Q_smaller(experience.state, experience.action.reshape((1, -1))))
+                        out_infos["reward{}".format(obj_idx)] = float(experience.reward)
+                        out_infos["total_reward{}".format(obj_idx)] = float(total_reward[obj_idx])
                     log_writer.write(out_infos)
                     
                 # after episode
