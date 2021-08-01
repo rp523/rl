@@ -130,7 +130,7 @@ class ObjectBase:
             new_theta -= 2.0 * jnp.pi
         return new_theta
     # update motion status
-    def step_evolve(self, accel, omega, y_min, y_max, x_min, x_max, fin):
+    def step(self, accel, omega, y_min, y_max, x_min, x_max, fin):
         new_theta = self.calc_new_theta(omega)
         new_y = self.calc_new_y(accel, omega)
         new_x = self.calc_new_x(accel, omega)

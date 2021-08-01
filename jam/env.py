@@ -21,32 +21,26 @@ from vis import make_all_state_img
 
 Experience = namedtuple("Experience",
                         [
-                            "state",
+                            "observation",
                             "action",
                             "reward",
                             "next_state",
                             "finished",
                             "next_finished",
-                            "accel_mean",
-                            "accel_sigma",
-                            "omega_mean",
-                            "omega_sigma",
                         ]
                         )
 
 class Environment:
-    def __init__(self, cfg, rng, init_weight_path, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max, buf_max):
+    def __init__(self, rng, batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max):
         self.__rng, rng = jrandom.split(rng)
         self.__batch_size = batch_size
         self.__state_shape = (self.__batch_size, pcpt_h, pcpt_w, EnChannel.num)
-        self.__shared_nn = SharedNetwork(cfg.net, rng, init_weight_path, self.__batch_size, pcpt_h, pcpt_w)
         self.__n_ped_max = n_ped_max
         self.__map_h = map_h
         self.__map_w = map_w
         self.__max_t = max_t
         self.__dt = dt
         self.__objects = None
-        self.__experiences = deque(maxlen = buf_max)
         self.__gamma = 0.9999#0.5 ** (1.0 / (half_decay_dt / self.dt))
 
     @property
@@ -65,22 +59,16 @@ class Environment:
     def dt(self):
         return self.__dt
     @property
-    def experiences(self):
-        return self.__experiences
-    @property
     def policy(self):
         return self.__policy
-    @property
-    def shared_nn(self):
-        return self.__shared_nn
     @property
     def gamma(self):
         return self.__gamma
     @property
     def state_shape(self):
         return self.__state_shape
-    def get_objects(self):
-        return self.__objects
+    def get_obj_num(self):
+        return len(self.__objects)
 
     def __make_new_pedestrian(self, old_pedestrians):
         _rng = jrandom.PRNGKey(123)
@@ -128,13 +116,19 @@ class Environment:
     def reset(self):
         self.__objects = self.__make_init_state()
 
+        observation = []
+        for obj_idx, obj in enumerate(self.__objects):
+            next_state = observe(self.__objects, obj_idx, self.map_h, self.map_w, self.__state_shape[1], self.__state_shape[2])
+            observation.append(next_state)
+        return observation
+
     def __step_evolve(self, object, action):
         accel, omega = action
         y_min = object.radius_m
         y_max = self.map_h - object.radius_m
         x_min = object.radius_m
         x_max = self.map_w - object.radius_m
-        object.step_evolve(accel, omega, y_min, y_max, x_min, x_max, object.reached_goal() or object.hit_with_wall(self.map_h, self.map_w))
+        object.step(accel, omega, y_min, y_max, x_min, x_max, object.reached_goal() or object.hit_with_wall(self.map_h, self.map_w))
         return object
     
     def __calc_reward(self, obj_idx, action):
@@ -171,52 +165,63 @@ class Environment:
 
         return jnp.array(reward)
     
-    def evolve(self):
-        #max_step = int(self.max_t / self.dt)
-        #for step in range(max_step):
-        while True:
+    def step(self, action):
 
-            # play
-            rec = []
-            for obj_idx in range(len(self.__objects)):
-                fin = self.__objects[obj_idx].reached_goal()# or self.__objects[a].hit_with_wall(self.map_h, self.map_w)
-                state = observe(self.__objects, obj_idx, self.map_h, self.map_w, self.__state_shape[1], self.__state_shape[2])
-                #make_all_state_img(self.__objects, self.map_h, self.map_w, pcpt_h = self.__state_shape[1], pcpt_w = self.__state_shape[2]).save("/home/isgsktyktt/work/im.png");exit()
-                
-                action, a_mean, a_sig, o_mean, o_sig = self.__shared_nn.decide_action(state)
-                action = action.flatten()   # single object size
-
-                # state transition
-                if not fin:
-                    self.__objects[obj_idx] = self.__step_evolve(self.__objects[obj_idx], action)
-                else:
-                    self.__objects[obj_idx].stop()
-                
-                rec.append((state, action, fin, a_mean, a_sig, o_mean, o_sig))
+        observation = []
+        done = []
+        reward = []
+        done_already = []
+        info = {}
+        # play
+        for obj_idx in range(len(self.__objects)):
+            done1 = self.__objects[obj_idx].reached_goal()# or self.__objects[a].hit_with_wall(self.map_h, self.map_w)
+            #make_all_state_img(self.__objects, self.map_h, self.map_w, pcpt_h = self.__state_shape[1], pcpt_w = self.__state_shape[2]).save("/home/isgsktyktt/work/im.png");exit()
             
-            # evaluation
-            for obj_idx in range(len(self.__objects)):
-                state, action, fin, a_mean, a_sig, o_mean, o_sig = rec[obj_idx]
-                next_state = observe(self.__objects, obj_idx, self.__map_h, self.__map_w, self.__state_shape[1], self.__state_shape[2])
-                reward = self.__calc_reward(obj_idx, action)
-                next_fin = self.__objects[obj_idx].reached_goal()# or self.__objects[a].hit_with_wall(self.map_h, self.map_w)
 
-                experience = Experience(state, action.flatten(), reward, next_state, fin, next_fin, a_mean, a_sig, o_mean, o_sig)
-                self.__experiences.append(experience)
+            # state transition
+            if not done1:
+                self.__objects[obj_idx] = self.__step_evolve(self.__objects[obj_idx], action[obj_idx])
+            else:
+                self.__objects[obj_idx].stop()
+            
+            done_already.append(done1)
+            
+        # evaluation
+        for obj_idx, obj in enumerate(self.__objects):
+            next_state = observe(self.__objects, obj_idx, self.map_h, self.map_w, self.__state_shape[1], self.__state_shape[2])
+            if done_already[obj_idx]:
+                r = 0.0
+            else:
+                r = self.__calc_reward(obj_idx, action)
+            d = obj.reached_goal()# or obj.hit_with_wall(self.map_h, self.map_w)
 
-            fin_all = True
-            for obj_idx in range(len(self.__objects)):
-                fin_all &= self.__objects[obj_idx].reached_goal()# or self.__objects[a].hit_with_wall(self.map_h, self.map_w)
-            yield fin_all, self.__objects
+            observation.append(next_state)
+            reward.append(r)
+            done.append(d)
+
+            info["tgt_x{}".format(obj_idx)] = obj.tgt_x
+            info["tgt_y{}".format(obj_idx)] = obj.tgt_y
+            info["x{}".format(obj_idx)] = obj.x
+            info["y{}".format(obj_idx)] = obj.y
+            info["v{}".format(obj_idx)] = obj.v
+            info["theta{}".format(obj_idx)] = obj.theta
             
-            if fin_all:
-                break
-            
+        return observation, reward, done, info
+
+class Agent:
+    def __init__(self, cfg_net, rng, batch_size, init_weight_path, pcpt_h, pcpt_w) -> None:
+        self.shared_nn = SharedNetwork(cfg_net, rng, init_weight_path, batch_size, pcpt_h, pcpt_w)
+    def get_action(self, state):
+        action, a_mean, a_sig, o_mean, o_sig = self.shared_nn.decide_action(state)
+        action = action.flatten()   # single object size
+        return action, a_mean, a_sig, o_mean, o_sig
+
 class Trainer:
+
     def __init__(self, cfg, seed):
         self.__cfg = cfg.train
         rng = jrandom.PRNGKey(seed)
-        self.__rng, rng = jrandom.split(rng)
+        self.__rng, rng_e, rng_a = jrandom.split(rng, 3)
         self.__batch_size = 256
         map_h = 10.0
         map_w = 10.0
@@ -228,8 +233,43 @@ class Trainer:
         half_decay_dt = 10.0
         init_weight_path = None#"/home/isgsktyktt/work/init_param.bin"
         self.__buf_max = int(1E5)#self.__batch_size * self.__batch_size
+        self.__experiences = deque(maxlen = self.__buf_max)
 
-        self.__env = Environment(cfg, rng, init_weight_path, self.__batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max, self.__buf_max)
+        self.__env = Environment(rng_e, self.__batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
+        self.__agent = Agent(cfg.net, rng_a, self.__batch_size, init_weight_path, pcpt_h, pcpt_w)
+    def __evolve(self):
+        observation = self.__env.reset()
+        obj_num = self.__env.get_obj_num()
+        
+        observation_old = observation
+        done_old = None
+        while True:
+            # decide action
+            action = []
+            for obj_idx in range(obj_num):
+                act, a_mean, a_sig, o_mean, o_sig = self.__agent.get_action(observation[obj_idx])
+                action.append(act)
+            # state transition
+            observation, reward, done, info = self.__env.step(action)
+            
+            if done_old is None:
+                done_old = [False for _ in range(obj_num)]
+            for obj_idx in range(obj_num):
+                experience = Experience(observation_old[obj_idx],
+                                        action[obj_idx].flatten(),
+                                        reward[obj_idx],
+                                        observation[obj_idx],
+                                        done_old[obj_idx],
+                                        done[obj_idx],
+                                        )
+                self.__experiences.append(experience)
+            observation_old = observation
+            done_old = done
+            
+            yield info
+            
+            if jnp.array(done).all():
+                break
     def learn_episode(self, verbose = True):
         episode_num_per_unit = 1
         learn_num_per_unit = 16
@@ -237,55 +277,39 @@ class Trainer:
         dst_base_dir = Path(self.__cfg.dst_dir_path)
         log_writer = None
         all_log_writer = LogWriter(dst_base_dir.joinpath("learn.csv"))
+
         for trial in range(self.__cfg.episode_unit_num):
-            total_rewards = []
-            for episode in range(episode_num_per_unit):
-                log_path = dst_base_dir.joinpath("play", "{}_{}.csv".format(trial, episode))
+            for episode_cnt in range(episode_num_per_unit):
+                log_path = dst_base_dir.joinpath("play", "{}_{}.csv".format(trial, episode_cnt))
                 if log_writer is not None:
                     del log_writer
                 log_writer = LogWriter(log_path)
-                self.__env.reset()
             
-                total_reward = [0.0] * len(self.__env.get_objects())
                 if verbose:
                     loop_fun = tqdm
                 else:
                     loop_fun = lambda x : x
-                for step, (fin_all, objects) in loop_fun(enumerate(self.__env.evolve())):
+                for step, info in loop_fun(enumerate(self.__evolve())):
                     out_infos = {}
-                    out_infos["episode"] = episode
+                    out_infos["episode"] = episode_cnt
                     out_infos["step"] = step
                     out_infos["t"] = step * self.__env.dt
-                    for obj_idx, object in enumerate(objects):
-                        experience = self.__env.experiences[-len(objects) + obj_idx]
-                        out_infos["tgt_y{}".format(obj_idx)] = float(object.tgt_y)
-                        out_infos["tgt_x{}".format(obj_idx)] = float(object.tgt_x)
-                        out_infos["y{}".format(obj_idx)] = float(object.y)
-                        out_infos["x{}".format(obj_idx)] = float(object.x)
-                        out_infos["v{}".format(obj_idx)] = float(object.v)
-                        out_infos["theta{}".format(obj_idx)] = float(object.theta)
+                    out_infos.update(info)
+                    obj_num = self.__env.get_obj_num()
+                    for obj_idx in range(obj_num):
+                        experience = self.__experiences[-obj_num + obj_idx]
                         out_infos["accel{}".format(obj_idx)] = float(experience.action[0])
-                        out_infos["accel_mean{}".format(obj_idx)] = float(experience.accel_mean)
-                        out_infos["accel_sigma{}".format(obj_idx)] = float(experience.accel_sigma)
                         out_infos["omega{}".format(obj_idx)] = float(experience.action[1])
-                        out_infos["omega_mean{}".format(obj_idx)] = float(experience.omega_mean)
-                        out_infos["omega_sigma{}".format(obj_idx)] = float(experience.omega_sigma)
-                        out_infos["finished{}".format(obj_idx)] = experience.finished
-                        total_reward[obj_idx] += experience.reward
-                        out_infos["Q{}".format(obj_idx)] = float(self.__env.shared_nn.apply_Q_smaller(experience.state, experience.action.reshape((1, -1))))
+                        out_infos["Q{}".format(obj_idx)] = float(self.__agent.shared_nn.apply_Q_smaller(experience.observation, experience.action.reshape((1, -1))))
                         out_infos["reward{}".format(obj_idx)] = float(experience.reward)
-                        out_infos["total_reward{}".format(obj_idx)] = float(total_reward[obj_idx])
                     log_writer.write(out_infos)
                     
                 # after episode
-                for t in total_reward:
-                    total_rewards.append(float(t))
 
-            if len(self.__env.experiences) < self.__batch_size:
+            if len(self.__experiences) < self.__batch_size:
                 continue
             # after episode unit
             learn_cnt_per_unit = 0
-            total_reward_mean = float(jnp.array(total_rewards).mean())
             state_shape = self.__env.state_shape
             s = jnp.zeros(state_shape, dtype = jnp.float32)
             a = jnp.zeros((state_shape[0], EnAction.num), dtype = jnp.float32)
@@ -298,22 +322,21 @@ class Trainer:
             total_loss_pi = []
             while 1:
                 self.__rng, rng = jrandom.split(self.__rng)
-                e_i = int(jrandom.randint(rng, (1,), 0, len(self.__env.experiences)))
-                e = self.__env.experiences[e_i]
+                e_i = int(jrandom.randint(rng, (1,), 0, len(self.__experiences)))
+                e = self.__experiences[e_i]
                 if not e.finished:
-                    s = s.at[val,:].set(e.state[0])
+                    s = s.at[val,:].set(e.observation[0])
                     a = a.at[val,:].set(e.action)
                     r = r.at[val].set(e.reward.flatten())
                     n_s = n_s.at[val,:].set(e.next_state[0])
                     n_fin = n_fin.at[val,:].set(float(e.next_finished))
                     val += 1
                     if val >= state_shape[0]:
-                        q_learn_cnt, p_learn_cnt, temperature, loss_val_qs, loss_val_pi, loss_balances = self.__env.shared_nn.update(gamma, s, a, r, n_s, n_fin)
+                        q_learn_cnt, p_learn_cnt, temperature, loss_val_qs, loss_val_pi, loss_balances = self.__agent.shared_nn.update(gamma, s, a, r, n_s, n_fin)
                         all_info = {}
-                        all_info["total_reward_mean"] = float(total_reward_mean)
                         all_info["trial"] = int(trial)
                         all_info["episode_num_per_unit"] = int(episode_num_per_unit)
-                        all_info["episode"] = int(episode)
+                        all_info["episode"] = int(episode_cnt)
                         all_info["q_learn_cnt"] = int(q_learn_cnt)
                         #all_info["p_learn_cnt"] = int(p_learn_cnt)
                         all_info["temperature"] = float(temperature)
@@ -334,12 +357,12 @@ class Trainer:
                         total_loss_pi.append(loss_val_pi)
                         val = 0
                         learn_cnt_per_unit += 1
-                        if (learn_cnt_per_unit >= min(learn_num_per_unit, len(self.__env.experiences) // self.__batch_size)):
+                        if (learn_cnt_per_unit >= min(learn_num_per_unit, len(self.__experiences) // self.__batch_size)):
                             break
             weight_path = dst_base_dir.joinpath("weight", "param{}.bin".format(trial))
             if not weight_path.parent.exists():
                 weight_path.parent.mkdir(parents = True)
-            self.__env.shared_nn.save(weight_path)
+            self.__agent.shared_nn.save(weight_path)
 
             #episode_num_per_unit = min(episode_num_per_unit + 1, state_shape[0])
             
