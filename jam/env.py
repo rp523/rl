@@ -227,7 +227,7 @@ class Trainer:
         map_w = 10.0
         pcpt_h = 32
         pcpt_w = 32
-        max_t = 128.0
+        max_t = 10000.0
         dt = 0.5 * 4
         n_ped_max = 1
         half_decay_dt = 10.0
@@ -243,7 +243,8 @@ class Trainer:
         
         observation_old = observation
         done_old = None
-        while True:
+        max_step = int(self.__env.max_t / self.__env.dt)
+        for _ in range(max_step):
             # decide action
             action = []
             for obj_idx in range(obj_num):

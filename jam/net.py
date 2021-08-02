@@ -44,7 +44,8 @@ class SharedNetwork:
         SharedNetwork.__cfg = cfg
         SharedNetwork.__state_shape = (batch_size, pcpt_h, pcpt_w, EnChannel.num)
         action_shape = (batch_size, EnAction.num)
-        feature_shape = (batch_size, feature_num)
+        q_feature_shape = (batch_size, feature_num * 2)
+        pi_feature_shape = (batch_size, feature_num)
 
         SharedNetwork.__apply_fun  = [None] * EnModel.num
         SharedNetwork.__opt_init   = [None] * EnModel.num
@@ -67,13 +68,13 @@ class SharedNetwork:
             (EnModel.q_ae0t, SharedNetwork.action_encoder, action_shape, feature_num, rngs[EnModel.q_ae0], q_lr),
             (EnModel.q_ae1t, SharedNetwork.action_encoder, action_shape, feature_num, rngs[EnModel.q_ae1], q_lr),
             
-            (EnModel.q_vd0,  SharedNetwork.value_decoder, feature_shape, 1, rngs[EnModel.q_vd0], q_lr),
-            (EnModel.q_vd1,  SharedNetwork.value_decoder, feature_shape, 1, rngs[EnModel.q_vd1], q_lr),
-            (EnModel.q_vd0t, SharedNetwork.value_decoder, feature_shape, 1, rngs[EnModel.q_vd0], q_lr),
-            (EnModel.q_vd1t, SharedNetwork.value_decoder, feature_shape, 1, rngs[EnModel.q_vd1], q_lr),
+            (EnModel.q_vd0,  SharedNetwork.value_decoder, q_feature_shape, 1, rngs[EnModel.q_vd0], q_lr),
+            (EnModel.q_vd1,  SharedNetwork.value_decoder, q_feature_shape, 1, rngs[EnModel.q_vd1], q_lr),
+            (EnModel.q_vd0t, SharedNetwork.value_decoder, q_feature_shape, 1, rngs[EnModel.q_vd0], q_lr),
+            (EnModel.q_vd1t, SharedNetwork.value_decoder, q_feature_shape, 1, rngs[EnModel.q_vd1], q_lr),
 
             (EnModel.p_se, SharedNetwork.state_encoder, SharedNetwork.__state_shape, feature_num, rngs[EnModel.p_se], p_lr),
-            (EnModel.p_pd, SharedNetwork.policy_decoder, feature_shape, EnAction.num * EnDist.num, rngs[EnModel.p_pd], p_lr),
+            (EnModel.p_pd, SharedNetwork.policy_decoder, pi_feature_shape, EnAction.num * EnDist.num, rngs[EnModel.p_pd], p_lr),
 
             (EnModel.alpha, SharedNetwork.alpha_maker, (batch_size,1), (1,), rngs[EnModel.alpha], a_lr),
             ]:
@@ -182,7 +183,8 @@ class SharedNetwork:
 
         vd = EnModel.q_vd0 + m
         vd_params = params[vd]
-        nn_out = SharedNetwork.__apply_fun[vd](vd_params, se_feature + ae_feature)
+        feature = jnp.append(se_feature, ae_feature, axis = -1)
+        nn_out = SharedNetwork.__apply_fun[vd](vd_params, feature)
 
         assert(nn_out.shape == (state.shape[0], 1))
         return nn_out
@@ -231,20 +233,16 @@ class SharedNetwork:
     @staticmethod
     def __pi_loss(params, s, rng):
         j_pi = SharedNetwork.J_pi(params, s, rng)
-        alpha = SharedNetwork.__apply_fun[EnModel.alpha](params[EnModel.alpha])
-        j_pi_max = j_pi.max()
-        j_pi_exp = jnp.exp((j_pi - j_pi_max) / alpha)
-        j_pi_w = j_pi_exp / j_pi_exp.sum()
-        loss = jnp.sum(j_pi * j_pi_w)
+        loss = jnp.mean(j_pi)
         #for param in params:
         #    loss += 1E-5 * net_maker.weight_decay(param)
         return loss
     @staticmethod
     def __q_loss(params, s, a, r, n_s, n_fin, gamma, rng, learned_m):
         j_q = SharedNetwork.Jq(params, s, a, r, n_s, n_fin, gamma, rng, learned_m)
-        alpha = SharedNetwork.__apply_fun[EnModel.alpha](params[EnModel.alpha])
+        # importance samplingもどき
         j_q_max = j_q.max()
-        j_q_exp = jnp.exp((j_q - j_q_max) / alpha)
+        j_q_exp = jnp.exp((j_q - j_q_max))
         j_q_w = j_q_exp / j_q_exp.sum()
         loss = jnp.sum(j_q * j_q_w)
         #for param in params:
