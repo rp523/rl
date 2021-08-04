@@ -212,9 +212,9 @@ class Agent:
     def __init__(self, cfg_net, rng, batch_size, init_weight_path, pcpt_h, pcpt_w) -> None:
         self.shared_nn = SharedNetwork(cfg_net, rng, init_weight_path, batch_size, pcpt_h, pcpt_w)
     def get_action(self, state):
-        action, a_mean, a_sig, o_mean, o_sig = self.shared_nn.decide_action(state)
+        action, means, sigs = self.shared_nn.decide_action(state)
         action = action.flatten()   # single object size
-        return action, a_mean, a_sig, o_mean, o_sig
+        return action, means, sigs
 
 class Trainer:
 
@@ -247,11 +247,16 @@ class Trainer:
         for _ in range(max_step):
             # decide action
             action = []
+            out_info = {}
             for obj_idx in range(obj_num):
-                act, a_mean, a_sig, o_mean, o_sig = self.__agent.get_action(observation[obj_idx])
+                act, means, sigs = self.__agent.get_action(observation[obj_idx])
                 action.append(act)
+                for a, (mean, sigma) in enumerate(zip(means[obj_idx], sigs[obj_idx])):
+                    out_info["obj{}_mean{}".format(obj_idx, a)] = mean
+                    out_info["obj{}_sigma{}".format(obj_idx, a)] = sigma
             # state transition
             observation, reward, done, info = self.__env.step(action)
+            out_info.update(info)
             
             if done_old is None:
                 done_old = [False for _ in range(obj_num)]
@@ -267,7 +272,7 @@ class Trainer:
             observation_old = observation
             done_old = done
             
-            yield info
+            yield out_info
             
             if jnp.array(done).all():
                 break

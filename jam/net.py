@@ -54,7 +54,7 @@ class SharedNetwork:
         self.__opt_states          = [None] * EnModel.num
         q_lr = 1E-3
         p_lr = 1E-3
-        a_lr = 1E-3
+        a_lr = 1E-4
 
         SharedNetwork.target_clip = 1.0 / jnp.sqrt(10)
         for i, nn, input_shape, output_num, rng, lr in [
@@ -121,17 +121,12 @@ class SharedNetwork:
         nn_out = SharedNetwork.__apply_fun[pd](pd_params, feature)
         assert(nn_out.shape == (state.shape[0], EnAction.num * EnDist.num))
 
-        a_mean = nn_out[:, EnAction.accel * EnDist.num + EnDist.mean     ]
-        a_lsig = nn_out[:, EnAction.accel * EnDist.num + EnDist.log_sigma]
-        o_mean = nn_out[:, EnAction.omega * EnDist.num + EnDist.mean     ]
-        o_lsig = nn_out[:, EnAction.omega * EnDist.num + EnDist.log_sigma]
-        
-        return a_mean, a_lsig, o_mean, o_lsig
+        return nn_out
     def decide_action(self, state):
         params = SharedNetwork.get_params(self.__opt_states)
         self.__rng, rng = jrandom.split(self.__rng)
-        action, log_pi, a_mean, a_sig, o_mean, o_sig = SharedNetwork.__action_and_log_Pi(params, state, rng, False)
-        return action, a_mean, a_sig, o_mean, o_sig
+        action, log_pi, means, sigs = SharedNetwork.__action_and_log_Pi(params, state, rng, False)
+        return action, means, sigs
     @staticmethod
     def __clip_eps(eps):
         return jnp.clip(eps, - SharedNetwork.target_clip, SharedNetwork.target_clip)
@@ -139,38 +134,28 @@ class SharedNetwork:
     @jax.jit
     def __action_and_log_Pi(params, state, rng, clip):
         # action
-        batch_size = state.shape[0]
-        a_mean, a_lsig, o_mean, o_lsig = SharedNetwork.apply_Pi(params, state)
-        a_lsig = jnp.log(jax.nn.sigmoid(a_lsig))
-        o_lsig = jnp.log(jax.nn.sigmoid(o_lsig))
-        assert(a_mean.shape == (batch_size,))
-        assert(a_lsig.shape == (batch_size,))
-        assert(o_mean.shape == (batch_size,))
-        assert(o_lsig.shape == (batch_size,))
-        rng_a, rng_o = jrandom.split(rng)
+        nn_out = SharedNetwork.apply_Pi(params, state)
+        batch_size, out_num = nn_out.shape
+        assert(out_num // 2 == EnAction.num)
+        means = nn_out[:, :EnAction.num]
+        lsigs = nn_out[:, EnAction.num:]
+        lsigs = jnp.log(jax.nn.sigmoid(lsigs))
+        assert(means.shape == (batch_size, EnAction.num))
+        assert(lsigs.shape == (batch_size, EnAction.num))
 
-        eps_a = jrandom.normal(rng_a, shape = (batch_size,))
-        eps_a = jax.lax.cond(clip, SharedNetwork.__clip_eps, lambda x:x, eps_a)
-        a_sig = jnp.exp(a_lsig)
-        accel = a_mean + a_sig * eps_a
-        assert(accel.shape == (batch_size,))
-
-        eps_o = jrandom.normal(rng_o, shape = (batch_size,))
-        eps_o = jax.lax.cond(clip, SharedNetwork.__clip_eps, lambda x:x, eps_o)
-        o_sig = jnp.exp(o_lsig)
-        omega = o_mean + o_sig * eps_o
-        assert(omega.shape == (batch_size,))
-
-        action = jnp.append(accel.reshape(batch_size, 1), omega.reshape(batch_size, 1), axis = -1)
+        epss = jrandom.normal(rng, shape = (batch_size, EnAction.num))
+        epss = jax.lax.cond(clip, SharedNetwork.__clip_eps, lambda x:x, epss)
+        sigs = jnp.exp(lsigs)
+        action = means + sigs * epss
         assert(action.shape == (batch_size, EnAction.num))
-        
-        log_pi = - ((accel - a_mean) ** 2) / (2 * (a_sig ** 2)) - ((omega - o_mean) ** 2) / (2 * (o_sig ** 2)) - 2.0 * 0.5 * jnp.log(2 * jnp.pi) - a_lsig - o_lsig
+
+        log_pi = - (((action - means) ** 2) / (2 * (sigs ** 2))).sum(axis = -1) - EnAction.num * 0.5 * jnp.log(2 * jnp.pi) - lsigs.sum(axis = -1)
         log_pi = log_pi.reshape((batch_size, 1))
 
         action = jnp.tanh(action)
-        log_pi = log_pi - jnp.log((1.0 - action * action) + 1E-5).sum(axis = 1, keepdims = True)
+        log_pi = log_pi - jnp.log((1.0 - action * action) + 1E-5).sum(axis = -1, keepdims = True)
 
-        return action, log_pi, a_mean, a_sig, o_mean, o_sig
+        return action, log_pi, means, sigs
     @staticmethod
     def apply_Q(params, state, action, m):
         se = EnModel.q_se0 + m
@@ -212,7 +197,7 @@ class SharedNetwork:
             self.__opt_states[i] = SharedNetwork.__opt_init[i](params[i])
     @staticmethod
     def Jq(params, s, a, r, n_s, n_fin, gamma, rng, learned_m):
-        n_a, log_pi, a_mean, a_sig, o_mean, o_sig = SharedNetwork.__action_and_log_Pi(params, n_s, rng, clip = True)
+        n_a, log_pi, means, sigs = SharedNetwork.__action_and_log_Pi(params, n_s, rng, clip = True)
         q_t = SharedNetwork.__apply_Q_smaller(params, n_s, n_a, True)
         alpha = SharedNetwork.__apply_fun[EnModel.alpha](params[EnModel.alpha])
         next_V = q_t - alpha * log_pi
@@ -225,7 +210,7 @@ class SharedNetwork:
         return j_q
     @staticmethod
     def J_pi(params, state, rng):
-        action, log_pi, a_mean, a_sig, o_mean, o_sig = SharedNetwork.__action_and_log_Pi(params, state, rng, clip = False)
+        action, log_pi, means, sigs = SharedNetwork.__action_and_log_Pi(params, state, rng, clip = False)
         q_t = SharedNetwork.__apply_Q_smaller(params, state, action, False)
         alpha = SharedNetwork.__apply_fun[EnModel.alpha](params[EnModel.alpha])
         j_pi = alpha * log_pi - q_t
@@ -254,7 +239,7 @@ class SharedNetwork:
     @staticmethod
     def J_alpha_Impl(args):
         params, state, rng = args
-        action, log_pi, a_mean, a_sig, o_mean, o_sig = SharedNetwork.__action_and_log_Pi(params, state, rng, clip = False)
+        action, log_pi, means, sigs = SharedNetwork.__action_and_log_Pi(params, state, rng, clip = False)
         alpha = SharedNetwork.__apply_fun[EnModel.alpha](params[EnModel.alpha])
         min_H = SharedNetwork.__cfg.min_entropy
         j_alpha = - alpha * (log_pi + min_H)
