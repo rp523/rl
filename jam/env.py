@@ -71,7 +71,7 @@ class Environment:
         return len(self.__objects)
 
     def __make_new_pedestrian(self, old_pedestrians):
-        _rng = jrandom.PRNGKey(123)
+        _rng, self.__rng = jrandom.split(self.__rng, 2)
         while 1:
             rng_y, rng_x, rng_theta, _rng = jrandom.split(_rng, 4)
             tgt_y, y = jrandom.uniform(rng_y, (2,), minval = 0.0, maxval = self.map_h)
@@ -136,7 +136,7 @@ class Environment:
         own = self.__objects[obj_idx]
 
         # delay punishment
-        reward = reward + (- 0.01)# * (1.0 - self.__gamma)#self.__delay_reward()
+        #reward = reward + (- 0.01)# * (1.0 - self.__gamma)#self.__delay_reward()
         
         # hit
         #other_objects = self.__objects[:obj_idx] + self.__objects[obj_idx + 1:]
@@ -147,10 +147,10 @@ class Environment:
         #        reward += (-1.0)
         
         # approach
-        remain_distance = jnp.sqrt((own.y - own.tgt_y) ** 2 + (own.x - own.tgt_x) ** 2)
-        max_distance = jnp.sqrt(self.__map_h ** 2 + self.__map_w ** 2)
+        remain_distance = ((own.y - own.tgt_y) ** 2 + (own.x - own.tgt_x) ** 2) ** 0.5
+        max_distance = (self.map_h ** 2 + self.map_w ** 2) ** 0.5
         remain_rate = remain_distance / max_distance
-        reward = reward + (- 0.1) * remain_rate
+        reward = reward + (- 1.0) * remain_rate
         
         # reach
         if own.reached_goal():
@@ -333,7 +333,7 @@ class Trainer:
                 if not e.finished:
                     s = s.at[val,:].set(e.observation[0])
                     a = a.at[val,:].set(e.action)
-                    r = r.at[val].set(e.reward.flatten())
+                    r = r.at[val].set(float(e.reward))
                     n_s = n_s.at[val,:].set(e.next_state[0])
                     n_fin = n_fin.at[val,:].set(float(e.next_finished))
                     val += 1
