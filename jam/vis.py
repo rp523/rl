@@ -98,15 +98,6 @@ def main(org_draw_cnt):
 
     fig, axs = None, None
     for csv_path in csv_path_list:
-        df = pd.read_csv(csv_path)
-        if (df[df.columns[0]].size == org_draw_cnt):
-            return org_draw_cnt
-        
-        if (fig is None) and (axs is None):
-            plt.clf()
-            fig, axs = plt.subplots(5, max(2, len(csv_path_list)),
-                figsize=(12.0, 8.0)
-            )
 
         row = 0
         if csv_path.parents[3].name == "outputs":
@@ -116,60 +107,45 @@ def main(org_draw_cnt):
         else:
             assert(0)
 
-        trials = onp.unique(df["trial"])
-        x = []
-        r = []
-        _x = []
-        _r = []
-        uni = 1
-        markersize = 3
-        for t in trials:
-            episodes = onp.unique(df["episode"][df["trial"] == t])
-            for e in episodes:
-                tgt_idx = onp.logical_and(df["trial"] == t, df["episode"] == e)
-                reward = df["total_reward_mean"][tgt_idx].mean()
-                _x.append(len(x))
-                _r.append(reward)
-                if len(_x) >= uni:
-                    x.append(onp.array(_x).mean() * uni)
-                    r.append(onp.array(_r).mean())
-                    _x = []
-                    _r = []
-        axs[row, idx].plot(x, r, ".", markersize = markersize)#, label = "Reward")
-        axs[row, idx].grid(True)
-        axs[row, idx].set_title("reward")
-        #axs[row, idx].set_ylim(-10, 1)
-        row += 1
-
-        '''
-        x = []
-        y = []
-        for t in trials:
-            episodes = onp.unique(df["episode"][df["trial"] == t])
-            for e in episodes:
-                play_csv_name = "{}_{}.csv".format(t, e)
-                play_csv_path = csv_path.parent.joinpath("play", play_csv_name)
-                assert(play_csv_path.exists())
-                _df = pd.read_csv(play_csv_path)
-                x.append(len(x))
-                if len(y) > 0:
-                    y.append(y[-1] + _df[_df.columns[0]].size)
-                else:
-                    y.append(0 + _df[_df.columns[0]].size)
-        axs[row, idx].plot(x, y, ".", markersize = markersize)#, label = "Reward")
-        axs[row, idx].grid(True)
-        #axs[row, idx].set_yscale("log")
-        row += 1
-        '''
-
-        x = df["q_learn_cnt"]
-        l = df["temperature"]
-        axs[row, idx].plot(x, l, ".", markersize = markersize)#, label = "Pi-Loss")
-        axs[row, idx].grid(True)
-        axs[row, idx].set_yscale("log")
-        row += 1
+        df = pd.read_csv(csv_path)
+        if (df[df.columns[0]].size == org_draw_cnt):
+            return org_draw_cnt
         
-        for action in ["accel", "omega"]:
+        trials = onp.unique(df["trial"])
+        uni = 16*16
+        markersize = 2
+
+        if 1:
+            plt.clf()
+            plt.figure(figsize=(12.0, 8.0))
+            _y = []
+            for t in trials:
+                episodes = onp.unique(df["episode"][df["trial"] == t])
+                for e in episodes:
+                    play_csv_path = csv_path.parent.joinpath("play", "{}_{}.csv".format(t, e))
+                    play_df = pd.read_csv(play_csv_path)
+                    _y.append(play_df["reward0"].sum())
+            _y = onp.array(_y)
+            y = []
+            for i in range(len(_y)):
+                if i > uni:
+                    y.append(_y[i-uni:i].mean())
+            def fx(y, _y):
+                return (onp.arange(len(y)) - len(y) + len(_y))
+            plt.plot(fx(_y,_y), _y, ".", markersize = markersize)#, label = "Reward")
+            plt.plot(fx(y,_y), y, ".", markersize = markersize)#, label = "Reward")
+            plt.grid(True)
+            #plt.xscale("log")
+            plt.xlim(500)
+            plt.ylim(-40, -0)
+
+        else:
+            if (fig is None) and (axs is None):
+                plt.clf()
+                fig, axs = plt.subplots(7, max(2, len(csv_path_list)),
+                    figsize=(12.0, 8.0)
+                )
+
             x = []
             y = []
             for t in trials:
@@ -177,29 +153,103 @@ def main(org_draw_cnt):
                 for e in episodes:
                     play_csv_path = csv_path.parent.joinpath("play", "{}_{}.csv".format(t, e))
                     play_df = pd.read_csv(play_csv_path)
-                    y.append(play_df["{}_sigma0".format(action)].mean())
-                    x.append(t)
-            axs[row, idx].plot(x, y, ".", markersize = markersize)
+                    x.append(len(x))
+                    y.append(play_df["reward0"].sum())
+            axs[row, idx].plot(x, y, ".", markersize = markersize)#, label = "Reward")
             axs[row, idx].grid(True)
-            #axs[row, idx].set_yscale("log")
-            #axs[row, idx].set_ylim(0.75, 1.0)
-        row += 1
+            #axs[row, idx].set_ylim(-30, 1)
+            row += 1
 
-        x = df["q_learn_cnt"]
-        l = df["loss_val_pi"]
-        pi_min_idx = 0
-        axs[row, idx].plot(x[pi_min_idx:], l[pi_min_idx:], ".", markersize = markersize)#, label = "Pi-Loss")
-        axs[row, idx].grid(True)
-        #axs[row, idx].set_title("pi-loss")
-        row += 1
+            _y = []
+            for t in trials:
+                episodes = onp.unique(df["episode"][df["trial"] == t])
+                for e in episodes:
+                    play_csv_path = csv_path.parent.joinpath("play", "{}_{}.csv".format(t, e))
+                    play_df = pd.read_csv(play_csv_path)
+                    _y.append(play_df["reward0"].sum())
+            _y = onp.array(_y)
+            x = []
+            y = []
+            for i in range(len(_y)):
+                if i > uni:
+                    x.append(i)
+                    y.append(_y[i-uni:i].mean())
+            axs[row, idx].plot(x, y, ".", markersize = markersize)#, label = "Reward")
+            axs[row, idx].grid(True)
+            #axs[row, idx].set_ylim(-2, 1)
+            row += 1
 
-        for i in range(2):
+            for i in range(2):
+                x = []
+                _y1 = []
+                _y2 = []
+                y1 = []
+                y2 = []
+                for t in trials:
+                    episodes = onp.unique(df["episode"][df["trial"] == t])
+                    for e in episodes:
+                        play_csv_path = csv_path.parent.joinpath("play", "{}_{}.csv".format(t, e))
+                        play_df = pd.read_csv(play_csv_path)
+                        x.append(len(x))
+                        _y1.append(play_df["obj0_sigma{}".format(i)].mean())
+                        _y2.append(play_df["obj0_mean{}".format(i)].mean())
+                        y1.append(onp.array(_y1[max(0,-1-uni):]).mean())
+                        y2.append(onp.array(_y2[max(0,-1-uni):]).mean())
+                axs[row, idx].plot(x, y1, ".", markersize = markersize)#, label = "Reward")
+                axs[row, idx].plot(x, y2, ".", markersize = markersize)#, label = "Reward")
+                axs[row, idx].grid(True)
+                #axs[row, idx].set_ylim(-2, 1)
+                row += 1
+
             x = df["q_learn_cnt"]
-            l = df["loss_val_q{}".format(i)]
-            axs[row, idx].plot(x, l, ".", markersize = markersize)#, label = "Q-Loss{}".format(i))
+            l = df["temperature"]
+            axs[row, idx].plot(x, l, ".", markersize = markersize)#, label = "Pi-Loss")
             axs[row, idx].grid(True)
             axs[row, idx].set_yscale("log")
-        row += 1
+            row += 1
+            
+            '''
+            for action in ["accel", "omega"]:
+                x = []
+                y = []
+                for t in trials:
+                    episodes = onp.unique(df["episode"][df["trial"] == t])
+                    for e in episodes:
+                        play_csv_path = csv_path.parent.joinpath("play", "{}_{}.csv".format(t, e))
+                        play_df = pd.read_csv(play_csv_path)
+                        y.append(play_df["{}_sigma0".format(action)].mean())
+                        x.append(t)
+                axs[row, idx].plot(x, y, ".", markersize = markersize)
+                axs[row, idx].grid(True)
+                #axs[row, idx].set_yscale("log")
+                #axs[row, idx].set_ylim(0.75, 1.0)
+            row += 1
+            '''
+
+            x = []
+            _y = df["loss_val_pi"]
+            y = []
+            for j in range(len(_y)):
+                x.append(j)
+                y.append(onp.array(_y[max(0,j-uni):j]).mean())
+            pi_min_idx = 0
+            axs[row, idx].plot(x[pi_min_idx:], y[pi_min_idx:], ".", markersize = markersize)#, label = "Pi-Loss")
+            axs[row, idx].grid(True)
+            #axs[row, idx].set_ylim(0)
+            #axs[row, idx].set_title("pi-loss")
+            row += 1
+
+            for i in range(2):
+                x = []
+                y = []
+                _y = df["loss_val_q{}".format(i)]
+                for j in range(len(_y)):
+                    x.append(j)
+                    y.append(onp.array(_y[max(0,j-uni):j]).mean())
+                axs[row, idx].plot(x, y, ".", markersize = markersize)#, label = "Q-Loss{}".format(i))
+                axs[row, idx].grid(True)
+                axs[row, idx].set_yscale("log")
+            row += 1
         
     #plt.show();exit()
     plt.savefig(csv_dir_path.joinpath("now.png"))
