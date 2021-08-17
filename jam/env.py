@@ -27,6 +27,7 @@ Experience = namedtuple("Experience",
                             "next_state",
                             "finished",
                             "next_finished",
+                            "explore",
                         ]
                         )
 
@@ -211,8 +212,8 @@ class Environment:
 class Agent:
     def __init__(self, cfg_net, rng, batch_size, init_weight_path, pcpt_h, pcpt_w) -> None:
         self.shared_nn = SharedNetwork(cfg_net, rng, init_weight_path, batch_size, pcpt_h, pcpt_w)
-    def get_action(self, state):
-        action, means, sigs = self.shared_nn.decide_action(state)
+    def get_action(self, state, explore):
+        action, means, sigs = self.shared_nn.decide_action(state, explore)
         action = action.flatten()   # single object size
         return action, means, sigs
 
@@ -237,7 +238,7 @@ class Trainer:
 
         self.__env = Environment(rng_e, self.__batch_size, map_h, map_w, pcpt_h, pcpt_w, max_t, dt, half_decay_dt, n_ped_max)
         self.__agent = Agent(cfg.net, rng_a, self.__batch_size, init_weight_path, pcpt_h, pcpt_w)
-    def __evolve(self):
+    def __evolve(self, explore):
         observation = self.__env.reset()
         obj_num = self.__env.get_obj_num()
         
@@ -249,7 +250,7 @@ class Trainer:
             action = []
             out_info = {}
             for obj_idx in range(obj_num):
-                act, means, sigs = self.__agent.get_action(observation[obj_idx])
+                act, means, sigs = self.__agent.get_action(observation[obj_idx], explore)
                 action.append(act)
                 for a, (mean, sigma) in enumerate(zip(means[obj_idx], sigs[obj_idx])):
                     out_info["obj{}_mean{}".format(obj_idx, a)] = mean
@@ -267,6 +268,7 @@ class Trainer:
                                         observation[obj_idx],
                                         done_old[obj_idx],
                                         done[obj_idx],
+                                        explore,
                                         )
                 self.__experiences.append(experience)
             observation_old = observation
@@ -283,8 +285,11 @@ class Trainer:
         dst_base_dir = Path(self.__cfg.dst_dir_path)
         log_writer = None
         all_log_writer = LogWriter(dst_base_dir.joinpath("learn.csv"))
-
         for trial in range(self.__cfg.episode_unit_num):
+            if trial % 2 == 0:
+                explore = True
+            else:
+                explore = True
             for episode_cnt in range(episode_num_per_unit):
                 log_path = dst_base_dir.joinpath("play", "{}_{}.csv".format(trial, episode_cnt))
                 if log_writer is not None:
@@ -295,7 +300,8 @@ class Trainer:
                     loop_fun = tqdm
                 else:
                     loop_fun = lambda x : x
-                for step, info in loop_fun(enumerate(self.__evolve())):
+
+                for step, info in loop_fun(enumerate(self.__evolve(explore))):
                     out_infos = {}
                     out_infos["episode"] = episode_cnt
                     out_infos["step"] = step
@@ -308,6 +314,7 @@ class Trainer:
                         out_infos["omega{}".format(obj_idx)] = float(experience.action[1])
                         out_infos["Q{}".format(obj_idx)] = float(self.__agent.shared_nn.apply_Q_smaller(experience.observation, experience.action.reshape((1, -1))))
                         out_infos["reward{}".format(obj_idx)] = float(experience.reward)
+                    out_infos["explore"] = explore
                     log_writer.write(out_infos)
                     
                 # after episode

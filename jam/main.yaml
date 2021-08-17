@@ -1,7 +1,7 @@
 net:
   alpha_adjust: True
-  min_entropy: -2
-  init_alpha: 1E-0
+  min_entropy: -4
+  init_alpha: 1E-1
 train:
   episode_unit_num: 1000000
   dst_dir_path: out
