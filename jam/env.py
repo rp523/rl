@@ -27,7 +27,6 @@ Experience = namedtuple("Experience",
                             "next_state",
                             "finished",
                             "next_finished",
-                            "explore",
                         ]
                         )
 
@@ -261,20 +260,21 @@ class Trainer:
             
             if done_old is None:
                 done_old = [False for _ in range(obj_num)]
+            
+            new_es = []
             for obj_idx in range(obj_num):
-                experience = Experience(observation_old[obj_idx],
-                                        action[obj_idx].flatten(),
-                                        reward[obj_idx],
-                                        observation[obj_idx],
-                                        done_old[obj_idx],
-                                        done[obj_idx],
-                                        explore,
-                                        )
-                self.__experiences.append(experience)
+                new_e = Experience( observation_old[obj_idx],
+                                    action[obj_idx].flatten(),
+                                    reward[obj_idx],
+                                    observation[obj_idx],
+                                    done_old[obj_idx],
+                                    done[obj_idx],
+                                    )
+                new_es.append(new_e)
             observation_old = observation
             done_old = done
             
-            yield out_info
+            yield out_info, new_es
             
             if jnp.array(done).all():
                 break
@@ -286,8 +286,8 @@ class Trainer:
         log_writer = None
         all_log_writer = LogWriter(dst_base_dir.joinpath("learn.csv"))
         for trial in range(self.__cfg.episode_unit_num):
-            if trial % 2 == 0:
-                explore = True
+            if trial % 64 == 0:
+                explore = False
             else:
                 explore = True
             for episode_cnt in range(episode_num_per_unit):
@@ -301,7 +301,11 @@ class Trainer:
                 else:
                     loop_fun = lambda x : x
 
-                for step, info in loop_fun(enumerate(self.__evolve(explore))):
+                for step, (info, new_es) in loop_fun(enumerate(self.__evolve(explore))):
+                    if explore:
+                        for new_e in new_es:
+                            self.__experiences.append(new_e)
+
                     out_infos = {}
                     out_infos["episode"] = episode_cnt
                     out_infos["step"] = step
@@ -309,7 +313,7 @@ class Trainer:
                     out_infos.update(info)
                     obj_num = self.__env.get_obj_num()
                     for obj_idx in range(obj_num):
-                        experience = self.__experiences[-obj_num + obj_idx]
+                        experience = new_es[obj_idx]
                         out_infos["accel{}".format(obj_idx)] = float(experience.action[0])
                         out_infos["omega{}".format(obj_idx)] = float(experience.action[1])
                         out_infos["Q{}".format(obj_idx)] = float(self.__agent.shared_nn.apply_Q_smaller(experience.observation, experience.action.reshape((1, -1))))
