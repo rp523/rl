@@ -144,21 +144,33 @@ class ObjectBase:
         else:
             self.stop()
     def stop(self):
-            self.v = 0.0
+        self.v = 0.0
 
 class Pedestrian(ObjectBase):
     def __init__(self, y, x, theta, dt):
         v_max = 1.4
-        a_max = v_max / 1.0
-        super().__init__(y, x, theta, dt, v_max, a_max)
+        self.__a_sbs_max = v_max / dt
+        super().__init__(y, x, theta, dt, v_max, self.__a_sbs_max)
+    # getter
+    @property
+    def action_abs_max(self):
+        return jnp.array([self.__a_sbs_max, jnp.pi / 2])
 
 class PedestrianObject(Pedestrian):
-    def __init__(self, tgt_y, tgt_x, y, x, theta, dt):
-        super().__init__(y, x, theta, dt)
+    def __init__(self, tgt_y, tgt_x, ini_y, ini_x, theta, dt):
+        super().__init__(ini_y, ini_x, theta, dt)
         self.__tgt_y = tgt_y
         self.__tgt_x = tgt_x
-        self.__radius_m = 0.5
+        self.__ini_y = ini_y
+        self.__ini_x = ini_x
+        self.__radius_m = 1.0
     # getter
+    @property
+    def ini_y(self):
+        return self.__ini_y
+    @property
+    def ini_x(self):
+        return self.__ini_x
     @property
     def tgt_y(self):
         return self.__tgt_y
@@ -171,15 +183,13 @@ class PedestrianObject(Pedestrian):
     
     def reached_goal(self):
         reached = False
-        if  (abs(self.y - self.tgt_y) < self.radius_m) and \
-            (abs(self.x - self.tgt_x) < self.radius_m):
+        if  ((self.y - self.tgt_y) ** 2 + (self.x - self.tgt_x) ** 2) < self.radius_m ** 2:
             reached = True
         return reached
     
     def hit_with(self, other):
         hit = False
-        if  (abs(self.y - other.tgt_y) < self.radius_m) and \
-            (abs(self.x - other.tgt_x) < self.radius_m):
+        if  ((self.y - other.y) ** 2 + (self.x - other.x) ** 2) < (self.radius_m + other.radius_m) ** 2:
             hit = True
         return hit
     

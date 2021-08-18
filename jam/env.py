@@ -71,7 +71,7 @@ class Environment:
     def get_obj_num(self):
         return len(self.__objects)
 
-    def __make_new_pedestrian(self, old_pedestrians):
+    def __make_new_pedestrian(self, existing_objects):
         _rng, self.__rng = jrandom.split(self.__rng, 2)
         while 1:
             rng_y, rng_x, rng_theta, _rng = jrandom.split(_rng, 4)
@@ -80,7 +80,7 @@ class Environment:
             theta = jrandom.uniform(rng_theta, (1,), minval = 0.0, maxval = 2.0 * jnp.pi)[0]
             new_ped = PedestrianObject(tgt_y, tgt_x, y, x, theta, self.dt)
 
-            isolated = True
+            isolated = False
             if  (new_ped.y >        0.0 + new_ped.radius_m) and \
                 (new_ped.y < self.map_h - new_ped.radius_m) and \
                 (new_ped.x >        0.0 + new_ped.radius_m) and \
@@ -89,15 +89,13 @@ class Environment:
                 (new_ped.tgt_y < self.map_h - new_ped.radius_m) and \
                 (new_ped.tgt_x >        0.0 + new_ped.radius_m) and \
                 (new_ped.tgt_x < self.map_w - new_ped.radius_m):
-                for old_ped in old_pedestrians:
-                    if  ((new_ped.tgt_y - old_ped.tgt_y) ** 2 + (new_ped.tgt_x - old_ped.tgt_x) ** 2 > (2 * (new_ped.radius_m + old_ped.radius_m)) ** 2) and \
-                        ((new_ped.y     - old_ped.y    ) ** 2 + (new_ped.x     - old_ped.x    ) ** 2 > (2 * (new_ped.radius_m + old_ped.radius_m)) ** 2):
-                        pass
-                    else:
-                        isolated = False
-                        break
-            else:
-                isolated = False
+                if not new_ped.reached_goal():
+                    far_from_all_others = True
+                    for existing_object in existing_objects:
+                        if new_ped.hit_with(existing_object):
+                            far_from_all_others = False
+                            break
+                    isolated = far_from_all_others
 
             if isolated:
                 break
@@ -207,6 +205,8 @@ class Environment:
             reward.append(r)
             done.append(d)
 
+            info["ini_x{}".format(obj_idx)] = obj.ini_x
+            info["ini_y{}".format(obj_idx)] = obj.ini_y
             info["tgt_x{}".format(obj_idx)] = obj.tgt_x
             info["tgt_y{}".format(obj_idx)] = obj.tgt_y
             info["x{}".format(obj_idx)] = obj.x
@@ -215,13 +215,15 @@ class Environment:
             info["theta{}".format(obj_idx)] = obj.theta
             
         return observation, reward, done, info
+    def action_abs_max(self, obj_idx):
+        return self.__objects[obj_idx].action_abs_max
 
 class Agent:
     def __init__(self, cfg_net, rng, batch_size, init_weight_path, pcpt_h, pcpt_w) -> None:
         self.shared_nn = SharedNetwork(cfg_net, rng, init_weight_path, batch_size, pcpt_h, pcpt_w)
-    def get_action(self, state, explore):
+    def get_action(self, state, action_abs_max, explore):
         action, means, sigs = self.shared_nn.decide_action(state, explore)
-        action = action.flatten()   # single object size
+        action = (action * action_abs_max).flatten()   # single object size
         return action, means, sigs
 
 class Trainer:
@@ -233,8 +235,8 @@ class Trainer:
         self.__batch_size = 256
         map_h = 10.0
         map_w = 10.0
-        pcpt_h = 16
-        pcpt_w = 16
+        pcpt_h = 32
+        pcpt_w = 32
         max_t = 10000.0
         dt = 0.5 * 4
         n_ped_max = 1
@@ -257,7 +259,7 @@ class Trainer:
             action = []
             out_info = {}
             for obj_idx in range(obj_num):
-                act, means, sigs = self.__agent.get_action(observation[obj_idx], explore)
+                act, means, sigs = self.__agent.get_action(observation[obj_idx], self.__env.action_abs_max(obj_idx), explore)
                 action.append(act)
                 for a, (mean, sigma) in enumerate(zip(means[obj_idx], sigs[obj_idx])):
                     out_info["obj{}_mean{}".format(obj_idx, a)] = mean
@@ -271,14 +273,15 @@ class Trainer:
             
             new_es = []
             for obj_idx in range(obj_num):
-                new_e = Experience( observation_old[obj_idx],
-                                    action[obj_idx].flatten(),
-                                    reward[obj_idx],
-                                    observation[obj_idx],
-                                    done_old[obj_idx],
-                                    done[obj_idx],
-                                    )
-                new_es.append(new_e)
+                if not done_old[obj_idx]:
+                    new_e = Experience( observation_old[obj_idx],
+                                        action[obj_idx].flatten(),
+                                        reward[obj_idx],
+                                        observation[obj_idx],
+                                        done_old[obj_idx],
+                                        done[obj_idx],
+                                        )
+                    new_es.append(new_e)
             observation_old = observation
             done_old = done
             
@@ -296,6 +299,10 @@ class Trainer:
         for trial in range(self.__cfg.episode_unit_num):
             if (trial + 1) % 64 == 0:
                 explore = False
+                weight_path = dst_base_dir.joinpath("weight", "param{}.bin".format(trial))
+                if not weight_path.parent.exists():
+                    weight_path.parent.mkdir(parents = True)
+                self.__agent.shared_nn.save(weight_path)
             else:
                 explore = True
             for episode_cnt in range(episode_num_per_unit):
@@ -330,7 +337,6 @@ class Trainer:
                     log_writer.write(out_infos)
                     
                 # after episode
-                exit()
 
             if len(self.__experiences) < self.__batch_size:
                 continue
@@ -385,10 +391,6 @@ class Trainer:
                         learn_cnt_per_unit += 1
                         if (learn_cnt_per_unit >= min(learn_num_per_unit, len(self.__experiences) // self.__batch_size)):
                             break
-            weight_path = dst_base_dir.joinpath("weight", "param{}.bin".format(trial))
-            if not weight_path.parent.exists():
-                weight_path.parent.mkdir(parents = True)
-            self.__agent.shared_nn.save(weight_path)
 
             #episode_num_per_unit = min(episode_num_per_unit + 1, state_shape[0])
             
