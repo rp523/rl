@@ -42,6 +42,7 @@ class Environment:
         self.__dt = dt
         self.__objects = None
         self.__gamma = 0.9999#0.5 ** (1.0 / (half_decay_dt / self.dt))
+        self.debug = 0
 
     @property
     def n_ped_max(self):
@@ -175,8 +176,15 @@ class Environment:
         # play
         for obj_idx in range(len(self.__objects)):
             done1 = self.__objects[obj_idx].reached_goal()# or self.__objects[a].hit_with_wall(self.map_h, self.map_w)
-            #make_all_state_img(self.__objects, self.map_h, self.map_w, pcpt_h = self.__state_shape[1], pcpt_w = self.__state_shape[2]).save("/home/isgsktyktt/work/im.png");exit()
-            
+            '''
+            img = make_all_state_img(self.__objects, self.map_h, self.map_w, pcpt_h = self.__state_shape[1], pcpt_w = self.__state_shape[2])
+            w, h = img.size
+            rate = 8
+            img = img.resize((w*rate, h*rate))
+            #img.show();exit()
+            img.save("/home/isgsktyktt/work/im/{}.png".format(self.debug))#;exit()
+            self.debug += 1
+            '''
 
             # state transition
             if not done1:
@@ -225,8 +233,8 @@ class Trainer:
         self.__batch_size = 256
         map_h = 10.0
         map_w = 10.0
-        pcpt_h = 32
-        pcpt_w = 32
+        pcpt_h = 16
+        pcpt_w = 16
         max_t = 10000.0
         dt = 0.5 * 4
         n_ped_max = 1
@@ -286,7 +294,7 @@ class Trainer:
         log_writer = None
         all_log_writer = LogWriter(dst_base_dir.joinpath("learn.csv"))
         for trial in range(self.__cfg.episode_unit_num):
-            if trial % 64 == 0:
+            if (trial + 1) % 64 == 0:
                 explore = False
             else:
                 explore = True
@@ -322,6 +330,7 @@ class Trainer:
                     log_writer.write(out_infos)
                     
                 # after episode
+                exit()
 
             if len(self.__experiences) < self.__batch_size:
                 continue

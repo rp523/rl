@@ -4,8 +4,8 @@ import numpy as onp
 from common import *
 
 def observe(agents, agent_idx, map_h, map_w, pcpt_h, pcpt_w):
-    pcpt_yrange = map_h * 2
-    pcpt_xrange = map_w * 2
+    pcpt_yrange = map_h * 2 * (2 ** 0.5)
+    pcpt_xrange = map_w * 2 * (2 ** 0.5)
     state = onp.zeros((1, pcpt_h, pcpt_w, EnChannel.num), dtype = onp.float32)
 
     own_obs_y = 0.5 * pcpt_yrange
