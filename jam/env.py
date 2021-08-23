@@ -103,7 +103,7 @@ class Environment:
     
     def __make_init_state(self):
         _rng, self.__rng = jrandom.split(self.__rng, 2)
-        n_ped = jrandom.randint(_rng, (1,), 1, self.n_ped_max + 1)
+        n_ped = self.n_ped_max#jrandom.randint(_rng, (1,), 1, self.n_ped_max + 1)
 
         objects = []
         for _ in range(int(n_ped)):
@@ -135,21 +135,20 @@ class Environment:
         own = self.__objects[obj_idx]
 
         # delay punishment
-        #reward = reward + (- 0.01)# * (1.0 - self.__gamma)#self.__delay_reward()
+        reward = reward + (- 0.01)# * (1.0 - self.__gamma)#self.__delay_reward()
         
         # hit
-        #other_objects = self.__objects[:obj_idx] + self.__objects[obj_idx + 1:]
-        #assert(len(other_objects) == len(self.__objects) - 1)
-        #for other_object in other_objects:
-        #    break
-        #    if own.hit_with(other_object):
-        #        reward += (-1.0)
+        other_objects = self.__objects[:obj_idx] + self.__objects[obj_idx + 1:]
+        assert(len(other_objects) == len(self.__objects) - 1)
+        for other_object in other_objects:
+            if own.hit_with(other_object):
+                reward += (-1.0)
         
         # approach
-        remain_distance = ((own.y - own.tgt_y) ** 2 + (own.x - own.tgt_x) ** 2) ** 0.5
-        max_distance = (self.map_h ** 2 + self.map_w ** 2) ** 0.5
-        remain_rate = remain_distance / max_distance
-        reward = reward + (- 1.0) * remain_rate
+        #remain_distance = ((own.y - own.tgt_y) ** 2 + (own.x - own.tgt_x) ** 2) ** 0.5
+        #max_distance = (self.map_h ** 2 + self.map_w ** 2) ** 0.5
+        #remain_rate = remain_distance / max_distance
+        #reward = reward + (- 1.0) * remain_rate
         
         # reach
         if own.reached_goal():
@@ -175,13 +174,20 @@ class Environment:
         for obj_idx in range(len(self.__objects)):
             done1 = self.__objects[obj_idx].reached_goal()# or self.__objects[a].hit_with_wall(self.map_h, self.map_w)
             '''
-            img = make_all_state_img(self.__objects, self.map_h, self.map_w, pcpt_h = self.__state_shape[1], pcpt_w = self.__state_shape[2])
+            out_cnt = 0
+            while 1:
+                out_cnt += 1
+                out_path = Path("/home/isgsktyktt/work/im/{}/{}.png".format(obj_idx, out_cnt))
+                if not out_path.exists():
+                    if not out_path.parent.exists():
+                        out_path.parent.mkdir(parents = True)
+                    break
+            img = make_all_state_img(self.__objects, obj_idx, self.map_h, self.map_w, pcpt_h = self.__state_shape[1], pcpt_w = self.__state_shape[2])
             w, h = img.size
             rate = 8
             img = img.resize((w*rate, h*rate))
-            #img.show();exit()
-            img.save("/home/isgsktyktt/work/im/{}.png".format(self.debug))#;exit()
-            self.debug += 1
+            img.save(out_path)
+            pass
             '''
 
             # state transition
@@ -223,6 +229,8 @@ class Agent:
         self.shared_nn = SharedNetwork(cfg_net, rng, init_weight_path, batch_size, pcpt_h, pcpt_w)
     def get_action(self, state, action_abs_max, explore):
         action, means, sigs = self.shared_nn.decide_action(state, explore)
+        means = means.flatten()
+        sigs = sigs.flatten()
         action = (action * action_abs_max).flatten()   # single object size
         return action, means, sigs
 
@@ -237,8 +245,8 @@ class Trainer:
         map_w = 10.0
         pcpt_h = 32
         pcpt_w = 32
-        max_t = 10000.0
-        dt = 0.5 * 4
+        max_t = 5000.0
+        dt = 0.5 * 2
         n_ped_max = 1
         half_decay_dt = 10.0
         init_weight_path = None#"/home/isgsktyktt/work/init_param.bin"
@@ -261,9 +269,11 @@ class Trainer:
             for obj_idx in range(obj_num):
                 act, means, sigs = self.__agent.get_action(observation[obj_idx], self.__env.action_abs_max(obj_idx), explore)
                 action.append(act)
-                for a, (mean, sigma) in enumerate(zip(means[obj_idx], sigs[obj_idx])):
+                for a, (act1, mean, sigma) in enumerate(zip(act, means, sigs)):
+                    out_info["obj{}_action{}".format(obj_idx, a)] = act1
                     out_info["obj{}_mean{}".format(obj_idx, a)] = mean
                     out_info["obj{}_sigma{}".format(obj_idx, a)] = sigma
+                out_info["Q{}".format(obj_idx)] = float(self.__agent.shared_nn.apply_Q_smaller(observation[obj_idx], act.reshape((1, -1))))
             # state transition
             observation, reward, done, info = self.__env.step(action)
             out_info.update(info)
@@ -282,6 +292,8 @@ class Trainer:
                                         done[obj_idx],
                                         )
                     new_es.append(new_e)
+                out_info["reward{}".format(obj_idx)] = float(reward[obj_idx])
+                out_info["done{}".format(obj_idx)] = done_old[obj_idx]
             observation_old = observation
             done_old = done
             
@@ -326,13 +338,6 @@ class Trainer:
                     out_infos["step"] = step
                     out_infos["t"] = step * self.__env.dt
                     out_infos.update(info)
-                    obj_num = self.__env.get_obj_num()
-                    for obj_idx in range(obj_num):
-                        experience = new_es[obj_idx]
-                        out_infos["accel{}".format(obj_idx)] = float(experience.action[0])
-                        out_infos["omega{}".format(obj_idx)] = float(experience.action[1])
-                        out_infos["Q{}".format(obj_idx)] = float(self.__agent.shared_nn.apply_Q_smaller(experience.observation, experience.action.reshape((1, -1))))
-                        out_infos["reward{}".format(obj_idx)] = float(experience.reward)
                     out_infos["explore"] = explore
                     log_writer.write(out_infos)
                     

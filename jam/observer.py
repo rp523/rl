@@ -4,8 +4,8 @@ import numpy as onp
 from common import *
 
 def observe(agents, agent_idx, map_h, map_w, pcpt_h, pcpt_w):
-    pcpt_yrange = map_h * 2 * (2 ** 0.5)
-    pcpt_xrange = map_w * 2 * (2 ** 0.5)
+    pcpt_yrange = map_h# * (2 ** 0.5)
+    pcpt_xrange = map_w# * (2 ** 0.5)
     state = onp.zeros((1, pcpt_h, pcpt_w, EnChannel.num), dtype = onp.float32)
 
     own_obs_y = 0.5 * pcpt_yrange
@@ -58,6 +58,18 @@ def observe(agents, agent_idx, map_h, map_w, pcpt_h, pcpt_w):
     if  (obs_py0 <= pcpt_h - 1) and (0 <= obs_py1) and \
         (obs_px0 <= pcpt_w - 1) and (0 <= obs_px1):
         state[0, max(obs_py0, 0) : min(obs_py1 + 1, pcpt_h), max(obs_px0, 0) : min(obs_px1 + 1, pcpt_w), EnChannel.occupy] = - 1.0
+    else:
+        # direction to NOT visible tgt
+        obs_pys = int((obs_y + own_obs_y) / pcpt_yrange * pcpt_h + 0.5)
+        obs_pye = int((  0.0 + own_obs_y) / pcpt_yrange * pcpt_h + 0.5)
+        obs_pxs = int((obs_x + own_obs_x) / pcpt_xrange * pcpt_w + 0.5)
+        obs_pxe = int((  0.0 + own_obs_x) / pcpt_xrange * pcpt_w + 0.5)
+        tgt_img = Image.fromarray(onp.zeros((pcpt_h, pcpt_w), dtype = onp.uint8))
+        dr = ImageDraw.Draw(tgt_img)
+        dr.line((obs_pxs, obs_pys, obs_pxe, obs_pye), fill = (1,), width = int((2 * own.radius_m) / pcpt_yrange * pcpt_h + 0.5))
+        tgt_arr = -1.0 * onp.asarray(tgt_img).astype(onp.float32)
+        tgt_arr[1:pcpt_h-1, 1:pcpt_w-1] = 0.0
+        state[0, :, :, EnChannel.occupy] += tgt_arr
 
     obs_y = 0.0
     obs_x = 0.0

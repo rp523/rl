@@ -149,7 +149,7 @@ class ObjectBase:
 class Pedestrian(ObjectBase):
     def __init__(self, y, x, theta, dt):
         v_max = 1.4
-        self.__a_sbs_max = v_max / dt
+        self.__a_sbs_max = v_max / 1.0
         super().__init__(y, x, theta, dt, v_max, self.__a_sbs_max)
     # getter
     @property
