@@ -157,13 +157,15 @@ class Pedestrian(ObjectBase):
         return jnp.array([self.__a_sbs_max, jnp.pi / 2])
 
 class PedestrianObject(Pedestrian):
+    __radius_m = 0.5
     def __init__(self, tgt_y, tgt_x, ini_y, ini_x, theta, dt):
         super().__init__(ini_y, ini_x, theta, dt)
         self.__tgt_y = tgt_y
         self.__tgt_x = tgt_x
         self.__ini_y = ini_y
         self.__ini_x = ini_x
-        self.__radius_m = 1.0
+        self.__reached_goal = False
+        self.__hit_with_other = False
     # getter
     @property
     def ini_y(self):
@@ -177,21 +179,27 @@ class PedestrianObject(Pedestrian):
     @property
     def tgt_x(self):
         return self.__tgt_x
+    @staticmethod
+    def get_radius_m():
+        return PedestrianObject.__radius_m
     @property
     def radius_m(self):
-        return self.__radius_m
+        return PedestrianObject.__radius_m
     
     def reached_goal(self):
-        reached = False
-        if  ((self.y - self.tgt_y) ** 2 + (self.x - self.tgt_x) ** 2) < self.radius_m ** 2:
-            reached = True
-        return reached
+        if not self.__reached_goal:
+            if  ((self.y - self.tgt_y) ** 2 + (self.x - self.tgt_x) ** 2) < self.radius_m ** 2:
+                self.__reached_goal = True
+        return self.__reached_goal
     
     def hit_with(self, other):
-        hit = False
-        if  ((self.y - other.y) ** 2 + (self.x - other.x) ** 2) < (self.radius_m + other.radius_m) ** 2:
-            hit = True
-        return hit
+        if not self.__hit_with_other:
+            if  ((self.y - other.y) ** 2 + (self.x - other.x) ** 2) < (self.radius_m + other.radius_m) ** 2:
+                self.__hit_with_other = True
+        return self.__hit_with_other
+    
+    def finished_episode(self):
+        return (self.__reached_goal or self.__hit_with_other)
     
     def hit_with_wall(self, map_h, map_w):
         hit = False

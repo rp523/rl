@@ -75,27 +75,20 @@ class Environment:
         _rng, self.__rng = jrandom.split(self.__rng, 2)
         while 1:
             rng_y, rng_x, rng_theta, _rng = jrandom.split(_rng, 4)
-            tgt_y, y = jrandom.uniform(rng_y, (2,), minval = 0.0, maxval = self.map_h)
-            tgt_x, x = jrandom.uniform(rng_x, (2,), minval = 0.0, maxval = self.map_w)
+            r = PedestrianObject.get_radius_m()
+            tgt_y, y = jrandom.uniform(rng_y, (2,), minval = r, maxval = self.map_h - r)
+            tgt_x, x = jrandom.uniform(rng_x, (2,), minval = r, maxval = self.map_w - r)
             theta = jrandom.uniform(rng_theta, (1,), minval = 0.0, maxval = 2.0 * jnp.pi)[0]
             new_ped = PedestrianObject(tgt_y, tgt_x, y, x, theta, self.dt)
 
             isolated = False
-            if  (new_ped.y >        0.0 + new_ped.radius_m) and \
-                (new_ped.y < self.map_h - new_ped.radius_m) and \
-                (new_ped.x >        0.0 + new_ped.radius_m) and \
-                (new_ped.x < self.map_w - new_ped.radius_m) and \
-                (new_ped.tgt_y >        0.0 + new_ped.radius_m) and \
-                (new_ped.tgt_y < self.map_h - new_ped.radius_m) and \
-                (new_ped.tgt_x >        0.0 + new_ped.radius_m) and \
-                (new_ped.tgt_x < self.map_w - new_ped.radius_m):
-                if not new_ped.reached_goal():
-                    far_from_all_others = True
-                    for existing_object in existing_objects:
-                        if new_ped.hit_with(existing_object):
-                            far_from_all_others = False
-                            break
-                    isolated = far_from_all_others
+            if (not new_ped.reached_goal()) and (not new_ped.hit_with_wall(self.map_h, self.map_w)):
+                far_from_all_others = True
+                for existing_object in existing_objects:
+                    if new_ped.hit_with(existing_object):
+                        far_from_all_others = False
+                        break
+                isolated = far_from_all_others
 
             if isolated:
                 break
@@ -127,7 +120,7 @@ class Environment:
         y_max = self.map_h - object.radius_m
         x_min = object.radius_m
         x_max = self.map_w - object.radius_m
-        object.step(accel, omega, y_min, y_max, x_min, x_max, object.reached_goal() or object.hit_with_wall(self.map_h, self.map_w))
+        object.step(accel, omega, y_min, y_max, x_min, x_max, object.finished_episode() or object.hit_with_wall(self.map_h, self.map_w))
         return object
     
     def __calc_reward(self, obj_idx, action):
@@ -143,6 +136,7 @@ class Environment:
         for other_object in other_objects:
             if own.hit_with(other_object):
                 reward += (-1.0)
+                break
         
         # approach
         #remain_distance = ((own.y - own.tgt_y) ** 2 + (own.x - own.tgt_x) ** 2) ** 0.5
@@ -172,7 +166,7 @@ class Environment:
         info = {}
         # play
         for obj_idx in range(len(self.__objects)):
-            done1 = self.__objects[obj_idx].reached_goal()# or self.__objects[a].hit_with_wall(self.map_h, self.map_w)
+            done1 = self.__objects[obj_idx].finished_episode()# or self.__objects[a].hit_with_wall(self.map_h, self.map_w)
             '''
             out_cnt = 0
             while 1:
@@ -205,7 +199,7 @@ class Environment:
                 r = 0.0
             else:
                 r = self.__calc_reward(obj_idx, action)
-            d = obj.reached_goal()# or obj.hit_with_wall(self.map_h, self.map_w)
+            d = obj.finished_episode()
 
             observation.append(next_state)
             reward.append(r)
@@ -303,20 +297,18 @@ class Trainer:
                 break
     def learn_episode(self, verbose = True):
         episode_num_per_unit = 1
-        learn_num_per_unit = 16
+        learn_num_per_unit = 1
         
         dst_base_dir = Path(self.__cfg.dst_dir_path)
         log_writer = None
         all_log_writer = LogWriter(dst_base_dir.joinpath("learn.csv"))
         for trial in range(self.__cfg.episode_unit_num):
             if (trial + 1) % 64 == 0:
-                explore = False
                 weight_path = dst_base_dir.joinpath("weight", "param{}.bin".format(trial))
                 if not weight_path.parent.exists():
                     weight_path.parent.mkdir(parents = True)
                 self.__agent.shared_nn.save(weight_path)
-            else:
-                explore = True
+            explore = True
             for episode_cnt in range(episode_num_per_unit):
                 log_path = dst_base_dir.joinpath("play", "{}_{}.csv".format(trial, episode_cnt))
                 if log_writer is not None:
